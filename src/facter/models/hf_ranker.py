@@ -169,14 +169,26 @@ class HFChatRanker:
         messages.append({"role": "user", "content": prompt_rank})
 
         # Prefer chat template when available
-        if hasattr(self.tokenizer, "apply_chat_template"):
-            prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        else:
-            # Fallback (works “ok” for many instruct models, but chat_template is preferred)
+        prompt = None
+        chat_template = getattr(self.tokenizer, "chat_template", None)
+
+        if chat_template:
+            try:
+                prompt = self.tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+            except ValueError:
+                prompt = None  # fall back below
+
+        if prompt is None:
+            # Fallback: plain text (works for base models)
             prompt = ""
             if system_prompt:
-                prompt += f"<system>\n{system_prompt}\n</system>\n"
-            prompt += f"<user>\n{prompt_rank}\n</user>\n<assistant>\n"
+                prompt += f"SYSTEM:\n{system_prompt}\n\n"
+            prompt += f"USER:\n{prompt_rank}\n\nASSISTANT:\n"
+
 
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
 

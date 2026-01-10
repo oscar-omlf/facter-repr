@@ -3,6 +3,7 @@ from typing import Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from tqdm.auto import tqdm
 
 from facter.models.ranker import Ranker
 from facter.fairness.online import OnlineScorer, CalibrationArtifacts, OnlineScoringConfig
@@ -51,6 +52,7 @@ class FACTEROnlineMonitor:
         item_db: Dict[int, Dict[str, str]],
         cal_artifacts: CalibrationArtifacts,
         q_alpha0: float,
+        progress: bool = False,
     ) -> Tuple[pd.DataFrame, list[OnlineIterationLog]]:
         q = float(q_alpha0)
         logs: list[OnlineIterationLog] = []
@@ -58,6 +60,9 @@ class FACTEROnlineMonitor:
         df = test_df.reset_index(drop=True).copy()
 
         for t in range(1, self.cfg.max_iterations + 1):
+            idx_iter = range(len(df))
+            if progress:
+                idx_iter = tqdm(idx_iter, total=len(df), desc=f"Online iter {t}/{self.cfg.max_iterations}")
             S_list: list[float] = []
             d_list: list[float] = []
             delta_list: list[float] = []
@@ -65,7 +70,7 @@ class FACTEROnlineMonitor:
             preds: list[int] = []
             is_viol_list: list[bool] = []
 
-            for i in range(len(df)):
+            for i in idx_iter:
                 row = df.iloc[i]
                 a_value = str(row[self.cfg.protected_key])
 

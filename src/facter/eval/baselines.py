@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
 
 import pandas as pd
+from tqdm.auto import tqdm
 
 from facter.models.ranker import Ranker
 from facter.eval.metrics import mean_recall_ndcg
@@ -17,12 +18,16 @@ def run_zero_shot_ranking(
     ranker: Ranker,
     k: int = 10,
     system_prompt: str | None = None,
+    progress: bool = False,
 ) -> List[List[int]]:
     """
     Returns ranked mids list per row (top-k by default).
     """
     ranked_mids: List[List[int]] = []
-    for _, row in df.iterrows():
+    it = df.iterrows()
+    if progress:
+        it = tqdm(it, total=len(df), desc="Baseline: zero-shot ranking")
+    for _, row in it:
         ranked_idx = ranker.rank(row["prompt_rank"], row["candidate_titles"], system_prompt=system_prompt)
         topk_idx = ranked_idx[:k]
         mids = [int(row["candidate_mids"][i]) for i in topk_idx]
@@ -34,8 +39,9 @@ def evaluate_zero_shot(
     df: pd.DataFrame,
     ranker: Ranker,
     k: int = 10,
+    progress: bool = False,
 ) -> Dict[str, float]:
-    ranked_mids = run_zero_shot_ranking(df, ranker, k=k, system_prompt=None)
+    ranked_mids = run_zero_shot_ranking(df, ranker, k=k, system_prompt=None, progress=progress)
     targets = df["target_mid"].astype(int).tolist()
     return mean_recall_ndcg(ranked_mids, targets, k=k)
 

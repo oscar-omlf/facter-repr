@@ -3,6 +3,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from tqdm.auto import tqdm
 
 from facter.models.ranker import Ranker
 from facter.models.embedder import TextEmbedder
@@ -64,6 +65,7 @@ class OfflineCalibrator:
         cal_df: pd.DataFrame,
         item_db: Dict[int, Dict[str, str]],
         system_prompt: Optional[str] = None,
+        progress: bool = False,
     ) -> OfflineCalibrationResult:
         df = cal_df.reset_index(drop=True).copy()
 
@@ -71,7 +73,14 @@ class OfflineCalibrator:
         context_emb = self.context_encoder.encode_df(df)  # [N,D] normalized
 
         # 2) Predict hat{y}_i (ranking-based, choose top-1)
-        pred_mids = np.array([self._predict_top1_mid(df.iloc[i], system_prompt) for i in range(len(df))], dtype=np.int64)
+        # pred_mids = np.array([self._predict_top1_mid(df.iloc[i], system_prompt) for i in range(len(df))], dtype=np.int64)
+        pred_mids_list = []
+        it = range(len(df))
+        if progress:
+            it = tqdm(it, total=len(df), desc="Offline: rank top-1 (calibration)")
+        for i in it:
+            pred_mids_list.append(self._predict_top1_mid(df.iloc[i], system_prompt))
+        pred_mids = np.array(pred_mids_list, dtype=np.int64)
 
         # 3) Fit W index
         ncfg = NeighborConfig(

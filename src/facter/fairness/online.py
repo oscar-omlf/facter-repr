@@ -1,9 +1,9 @@
-# src/facter/fairness/online.py
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+
 
 from facter.models.embedder import TextEmbedder
 from facter.fairness.context_encoder import ContextEncoder
