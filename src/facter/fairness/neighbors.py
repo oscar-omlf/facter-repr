@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Dict, List, Sequence, Tuple
+from typing import List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -16,47 +16,55 @@ def cosine_sim_matrix(emb: np.ndarray) -> np.ndarray:
 @dataclass(frozen=True)
 class NeighborConfig:
     protected_cols: Tuple[str, ...] = ("gender", "age", "occupation")
-    tau_rho: float = 0.90  # similarity threshold used later for \Delta_i filtering
+    tau_rho: float = 0.90  # neighbor eligibility gate for \Delta_i and N(z_new)
     tau_x_l2: float | None = None  # optional locality constraint on context embeddings
-    top_k: int | None = None  # optional: store only top-k cross-group neighbors per point
+    top_k: int | None = None  # optionally store only top-k cross-group neighbors per point
 
 
 class CrossGroupNeighborIndex:
     """
-    Represents W implicitly. Stores cross-group neighbors and their W_ij = cos(e_i^x, e_j^x).
-    Paper Eq.(4): W_ij = cos(e^x_i, e^x_j) if a_i != a_j and ||x_i-x_j|| <= tau_x else 0.
-    We approximate x-distance with embedding L2 if tau_x_l2 is set.
+    Represents W implicitly.
+    Stores cross-group neighbors j for each calibration i, and their W_ij=cos(e^x_i,e^x_j),
+    respecting optional locality (tau_x_l2) and optional top_k truncation.
+
+    Paper Eq.(4): W_ij = cos(e^x_i,e^x_j) if a_i != a_j and ||x_i-x_j|| <= tau_x else 0.
+    We proxy ||x_i-x_j|| with embedding L2 if tau_x_l2 is set.
     """
 
     def __init__(self, cfg: NeighborConfig):
         self.cfg = cfg
         self._neighbors: List[np.ndarray] = []
         self._sims: List[np.ndarray] = []
-        self._a: List[Tuple[str, ...]] = []
+        self._group_id: np.ndarray | None = None  # integer group ids
+        self._a_tuple: List[Tuple[str, ...]] = []
+
+    @property
+    def a_tuples(self) -> List[Tuple[str, ...]]:
+        return self._a_tuple
 
     def fit(self, df: pd.DataFrame, context_emb: np.ndarray) -> None:
-        """
-        df: calibration dataframe with protected columns
-        context_emb: [N, D] normalized context embeddings
-        """
         n = len(df)
         if context_emb.shape[0] != n:
             raise ValueError("context_emb rows must match df length")
 
         # protected attribute tuple per row
-        a = [
+        a_tuple = [
             tuple(str(df.iloc[i][c]) for c in self.cfg.protected_cols)
             for i in range(n)
         ]
-        self._a = a
+        self._a_tuple = a_tuple
+
+        # map tuples to integer group ids for fast cross-group masking
+        uniq = {t: idx for idx, t in enumerate(sorted(set(a_tuple)))}
+        group_id = np.array([uniq[t] for t in a_tuple], dtype=np.int64)
+        self._group_id = group_id
 
         sims = cosine_sim_matrix(context_emb)
         np.fill_diagonal(sims, -1.0)  # exclude self
 
-        # optional locality constraint using embedding L2 distance
+        # optional locality constraint
         if self.cfg.tau_x_l2 is not None:
-            # Since embeddings are normalized, L2^2 = 2 - 2*cos
-            # So L2 <= tau_x_l2  <=> cos >= 1 - tau_x_l2^2/2
+            # normalized embeddings: L2^2 = 2 - 2*cos -> L2 <= tau => cos >= 1 - tau^2/2
             cos_min = 1.0 - (self.cfg.tau_x_l2 ** 2) / 2.0
         else:
             cos_min = -np.inf
@@ -65,15 +73,14 @@ class CrossGroupNeighborIndex:
         self._sims = []
 
         for i in range(n):
-            # cross-group indices
-            mask_cross = np.array([a[j] != a[i] for j in range(n)], dtype=bool)
+            # cross-group: group_id != group_id[i]
+            mask_cross = group_id != group_id[i]
             mask_sim = sims[i] >= cos_min
             mask = mask_cross & mask_sim
 
             idx = np.where(mask)[0]
             s = sims[i, idx]
 
-            # optional: keep only top_k by cosine
             if self.cfg.top_k is not None and len(idx) > self.cfg.top_k:
                 top = np.argsort(-s)[: self.cfg.top_k]
                 idx = idx[top]
@@ -90,7 +97,7 @@ class CrossGroupNeighborIndex:
 
     def eligible_neighbors_for_delta(self, i: int) -> np.ndarray:
         """
-        Returns neighbor indices j with W_ij > tau_rho (paper's \tau_\rho gate used in \Delta).
+        Returns neighbor indices j with W_ij > tau_rho (paper τ_ρ gate used in Δ).
         """
         idx = self._neighbors[i]
         s = self._sims[i]

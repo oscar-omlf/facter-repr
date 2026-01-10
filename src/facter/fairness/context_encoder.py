@@ -22,11 +22,15 @@ class ContextEncoder:
         self.cfg = cfg
 
     def _context_text(self, history_titles: Sequence[str]) -> str:
-        # Non-sensitive context only; keep format stable
-        hist = list(history_titles)[-self.cfg.max_history_items :]
+        if self.cfg.max_history_items <= 0:
+            hist = []
+        else:
+            hist = list(history_titles)[-self.cfg.max_history_items :]
+
         lines = ["History (most recent last):"]
         lines.extend([f"- {t}" for t in hist])
         return "\n".join(lines)
+
 
     def encode_df(self, df: pd.DataFrame) -> np.ndarray:
         """
