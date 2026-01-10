@@ -18,6 +18,7 @@ FACTER is a post-hoc wrapper around a black-box LLM recommender that:
 
 
 ## Setup (conda)
+> NOTE: Ideally we will want to add Docker and/or Singularity for maximum reproducibility.
 
 ### 1) Create environment
 ```bash
