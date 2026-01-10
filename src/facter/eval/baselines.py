@@ -42,9 +42,6 @@ def evaluate_zero_shot(
 
 def run_up5_placeholder(*args, **kwargs):
     """
-    UP5 is intentionally not implemented.
-    IMPORTANT: do not claim reproduction of UP5 numbers unless you run the real model.
+    UP5 to be implemented.
     """
-    raise NotImplementedError(
-        "UP5 baseline not implemented. Do not claim UP5 reproduction without running the released model."
-    )
+    raise NotImplementedError()

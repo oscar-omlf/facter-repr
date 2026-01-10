@@ -1,5 +1,6 @@
+# src/facter/fairness/online.py
 from dataclasses import dataclass
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -11,33 +12,22 @@ from facter.fairness.scoring import item_text
 
 @dataclass(frozen=True)
 class OnlineScoringConfig:
-    protected_cols: Tuple[str, ...] = ("gender", "age", "occupation")
+    protected_cols: Tuple[str, ...] = ("gender",)
     tau_rho: float = 0.90
+    tau_x_l2: float | None = None  # locality constraint
     lambda_fairness: float = 0.7
 
 
 @dataclass(frozen=True)
 class CalibrationArtifacts:
-    """
-    What online scoring needs from offline calibration.
-    """
-    cal_df: pd.DataFrame                  # must include protected cols
-    cal_context_emb: np.ndarray           # [N, D], normalized
-    cal_pred_emb: np.ndarray              # [N, M], normalized
+    cal_df: pd.DataFrame            # must include protected cols
+    cal_context_emb: np.ndarray     # [N, D], normalized
+    cal_pred_emb: np.ndarray        # [N, D], normalized  (fix comment)
     q_alpha0: float
 
 
 class OnlineScorer:
-    """
-    Implements Eq.(9): S_new = d_new + lambda * Δ_new
-    using N(z_new) defined by context similarity >= tau_rho and cross-group.
-    """
-    def __init__(
-        self,
-        embedder: TextEmbedder,
-        context_encoder: ContextEncoder,
-        cfg: OnlineScoringConfig,
-    ):
+    def __init__(self, embedder: TextEmbedder, context_encoder: ContextEncoder, cfg: OnlineScoringConfig):
         self.embedder = embedder
         self.context_encoder = context_encoder
         self.cfg = cfg
@@ -50,30 +40,27 @@ class OnlineScorer:
         cal: CalibrationArtifacts,
         target_mid: Optional[int] = None,
     ) -> Tuple[float, float, float]:
-        """
-        Returns (S_new, d_new, delta_new).
-        If target_mid is None, d_new := 0.0 (deployment-like mode).
-        """
-        # Context embedding for new point
         df_one = pd.DataFrame([row.to_dict()])
         x_new = self.context_encoder.encode_df(df_one)[0]  # [D] normalized
-        sims = cal.cal_context_emb @ x_new  # cosine since normalized
+        sims = cal.cal_context_emb @ x_new
 
-        # Cross-group mask
+        # Cross-group mask (based on protected_cols actually used for fairness)
         a_new = tuple(str(row[c]) for c in self.cfg.protected_cols)
         a_cal = cal.cal_df[list(self.cfg.protected_cols)].astype(str).agg("_".join, axis=1).to_numpy()
-        a_new_key = "_".join(a_new)
-        cross = a_cal != a_new_key
+        cross = a_cal != "_".join(a_new)
 
-        # Similarity gate for neighborhood N(z_new)
-        neigh_mask = (sims >= self.cfg.tau_rho) & cross
+        # Optional locality gate (Eq.4 radius τx), implemented in embedding-L2 space
+        if self.cfg.tau_x_l2 is not None:
+            cos_min = 1.0 - (self.cfg.tau_x_l2 ** 2) / 2.0
+        else:
+            cos_min = -np.inf
+
+        neigh_mask = cross & (sims >= self.cfg.tau_rho) & (sims >= cos_min)
         neigh_idx = np.where(neigh_mask)[0]
 
-        # Pred embedding
         pred_txt = item_text(pred_mid, item_db)
-        pred_emb = self.embedder.encode_texts([pred_txt])[0]  # [M], normalized
+        pred_emb = self.embedder.encode_texts([pred_txt])[0]  # [D], normalized
 
-        # Δ_new
         if neigh_idx.size == 0:
             delta_new = 0.0
         else:
@@ -81,7 +68,6 @@ class OnlineScorer:
             dists = np.sqrt(np.sum(diffs * diffs, axis=1))
             delta_new = float(np.max(dists))
 
-        # d_new
         if target_mid is None:
             d_new = 0.0
         else:
