@@ -209,4 +209,5 @@ __marimo__/
 
 
 data/
+!src/facter/data/
 mlruns/
