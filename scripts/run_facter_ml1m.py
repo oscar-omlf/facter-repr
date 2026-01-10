@@ -213,14 +213,13 @@ def main() -> None:
         with stage("compute_facter_metrics", timings):
             facter_metrics = {}
             for it in range(1, args.max_iterations + 1):
-                preds = out_df[f"pred_mid_iter{it}"].astype(int).tolist()
-                ranked_lists = [[m] for m in preds]  # top-1 only
+                ranked_lists = out_df[f"ranked_mids_iter{it}"]
                 targets = out_df["target_mid"].astype(int).tolist()
                 m = mean_recall_ndcg(ranked_lists, targets, k=args.k)
                 v = int(np.sum(out_df[f"is_violation_iter{it}"].to_numpy()))
                 facter_metrics[f"iter{it}.violations"] = float(v)
-                facter_metrics[f"iter{it}.Recall@{args.k}"] = m[f"Recall@{args.k}"]
-                facter_metrics[f"iter{it}.NDCG@{args.k}"] = m[f"NDCG@{args.k}"]
+                facter_metrics[f"iter{it}.Recall{args.k}"] = m[f"Recall@{args.k}"]
+                facter_metrics[f"iter{it}.NDCG{args.k}"] = m[f"NDCG@{args.k}"]
 
             log_metrics(facter_metrics)
             log_text(json.dumps({"baseline": baseline_metrics, "facter": facter_metrics}, indent=2), "results/summary.json")
