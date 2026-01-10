@@ -32,7 +32,6 @@ class FACTEROnlineMonitor:
     Implements the online phase loop (Sec. 3.3):
       - score each example
       - if violation: add to buffer + inject rules + update threshold (Theorem 2)
-    :contentReference[oaicite:11]{index=11}
     """
     def __init__(
         self,

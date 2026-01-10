@@ -40,7 +40,6 @@ class OfflineCalibrator:
       - Enc(x) + W (Eq.4)
       - score S_i (Eq.5)
       - conformal quantile Q_alpha^(0) (Eq.6)
-    :contentReference[oaicite:9]{index=9}
     """
     def __init__(
         self,

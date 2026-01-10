@@ -45,7 +45,7 @@ class ViolationBuffer:
 class PromptRepairEngine:
     """
     Builds a system prompt I^(t) that injects “Avoid: (a) -> feature-only” rules.
-    Paper Eq.(10) and protocol description in Section 3.3 stage 3. :contentReference[oaicite:5]{index=5}
+    Paper Eq.(10) and protocol description in Section 3.3 stage 3.
     """
     def __init__(self, cfg: PromptRepairConfig, item_db: Dict[int, Dict[str, str]]):
         self.cfg = cfg

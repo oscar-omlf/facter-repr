@@ -30,7 +30,7 @@ class CalibrationArtifacts:
 class OnlineScorer:
     """
     Implements Eq.(9): S_new = d_new + lambda * Δ_new
-    using N(z_new) defined by context similarity >= tau_rho and cross-group. :contentReference[oaicite:7]{index=7}
+    using N(z_new) defined by context similarity >= tau_rho and cross-group.
     """
     def __init__(
         self,
