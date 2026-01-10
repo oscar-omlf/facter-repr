@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import torch
 
 from facter.data.download import download_movielens_1m
 from facter.data.movielens import load_ml1m, build_item_db
@@ -32,6 +33,7 @@ def main() -> None:
     p.add_argument("--processed_dir", type=str, default="data/processed/ml-1m")
     p.add_argument("--model_id", type=str, required=True)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
 
     # FACTER hyperparams (paper defaults)
     p.add_argument("--alpha", type=float, default=0.10)       # miscoverage in Eq.(6)
@@ -62,8 +64,13 @@ def main() -> None:
     frames = load_ml1m(raw_dir)
     item_db = build_item_db(frames.movies)
 
+    if args.device == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    else:
+        device = args.device
+
     # Models
-    embedder = TextEmbedder(EmbedderConfig(device="cuda" if True else "cpu"))
+    embedder = TextEmbedder(EmbedderConfig(device=device))
     ranker = HFChatRanker(HFChatRankerConfig(model_id=args.model_id))
 
     # Context encoder Enc(x)
