@@ -1,4 +1,5 @@
 import os
+import re
 import platform
 import subprocess
 from contextlib import contextmanager
@@ -13,6 +14,15 @@ class MLflowConfig:
     tracking_uri: str = "sqlite:///./mlflow.db"
     experiment_name: str = "facter-repro"
     run_name: Optional[str] = None
+
+
+def _sanitize_key(key: str) -> str:
+    """
+    Removes characters not allowed by MLflow:
+    Allowed: alphanumerics, underscores (_), dashes (-), periods (.), spaces ( ), and slashes (/)
+    """
+    # This regex replaces any character NOT in the allowed set with an underscore
+    return re.sub(r'[^a-zA-Z0-9._\-\/ ]', '_', key)
 
 
 def _get_git_commit() -> str:
@@ -61,14 +71,18 @@ def start_run(cfg: MLflowConfig, tags: Optional[Dict[str, Any]] = None) -> Itera
 
 
 def log_params(params: Dict[str, Any]) -> None:
-    # MLflow requires values to be simple (str/int/float/bool)
-    safe = {k: (v if isinstance(v, (str, int, float, bool)) else str(v)) for k, v in params.items()}
-    mlflow.log_params(safe)
-
+    # Sanitize keys AND ensure values are MLflow-safe
+    safe_params = {
+        _sanitize_key(k): (v if isinstance(v, (str, int, float, bool)) else str(v)) 
+        for k, v in params.items()
+    }
+    mlflow.log_params(safe_params)
 
 def log_metrics(metrics: Dict[str, float], step: Optional[int] = None) -> None:
-    for k, v in metrics.items():
-        mlflow.log_metric(k, float(v), step=step)
+    # Sanitize keys before logging
+    safe_metrics = {_sanitize_key(k): float(v) for k, v in metrics.items()}
+    for k, v in safe_metrics.items():
+        mlflow.log_metric(k, v, step=step)
 
 
 def log_text(text: str, artifact_path: str) -> None:
