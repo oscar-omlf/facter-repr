@@ -15,10 +15,31 @@ def _sha256(s: str) -> str:
 
 def _normalize_title(s: str) -> str:
     s = s.strip().lower()
-    s = s.replace("’", "'")
-    s = re.sub(r'["“”]', "", s)
+    s = s.replace("'", "'")
+    s = re.sub(r'["""]', "", s)
     s = re.sub(r"\s+", " ", s)
     s = re.sub(r"[^a-z0-9 \-:'&(),.!?]", "", s)
+    s = s.strip()
+    
+    # Move determiners from end to beginning: "Fish Called Wanda, A" -> "A Fish Called Wanda"
+    # Handle patterns like ", A (year)", ", The (year)", ", An (year)"
+    # First remove year in parentheses temporarily
+    year_match = re.search(r'\s*\((\d{4})\)$', s)
+    year_suffix = ""
+    if year_match:
+        year_suffix = f" ({year_match.group(1)})"
+        s = s[:year_match.start()].strip()
+    
+    # Now handle determiner at end: ", A", ", The", ", An"
+    determiner_match = re.search(r',\s*(a|an|the)$', s, re.IGNORECASE)
+    if determiner_match:
+        determiner = determiner_match.group(1).lower()
+        title_without_determiner = s[:determiner_match.start()].strip()
+        s = f"{determiner} {title_without_determiner}"
+    
+    # Re-add year if it existed
+    s = s + year_suffix
+    
     return s.strip()
 
 
@@ -159,6 +180,7 @@ class HFChatRanker:
     def rank(self, prompt_rank: str, candidate_titles: Sequence[str], system_prompt: str | None = None) -> List[int]:
         key = self._cache_key(prompt_rank, candidate_titles, system_prompt)
         cpath = self._cache_path(key)
+        
         if cpath.exists():
             obj = json.loads(cpath.read_text(encoding="utf-8"))
             return list(obj["ranked_indices"])
@@ -188,7 +210,6 @@ class HFChatRanker:
             if system_prompt:
                 prompt += f"SYSTEM:\n{system_prompt}\n\n"
             prompt += f"USER:\n{prompt_rank}\n\nASSISTANT:\n"
-
 
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
 
