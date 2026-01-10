@@ -68,6 +68,7 @@ class FACTEROnlineMonitor:
             delta_list: list[float] = []
             viol = 0
             preds: list[int] = []
+            ranked_mids_list: list[list[int]] = []
             is_viol_list: list[bool] = []
 
             for i in idx_iter:
@@ -86,6 +87,10 @@ class FACTEROnlineMonitor:
                 best_idx = ranked_idx[0]
                 pred_mid = int(row["candidate_mids"][best_idx])
                 preds.append(pred_mid)
+                
+                # save full ranked list of mids
+                ranked_mids = [int(row["candidate_mids"][idx]) for idx in ranked_idx]
+                ranked_mids_list.append(ranked_mids)
 
                 s, d, delta = self.scorer.score_one(
                     row=row,
@@ -110,6 +115,7 @@ class FACTEROnlineMonitor:
                     q = update_threshold_theorem2(q_t=q, s_t=s, gamma=self.cfg.gamma)
 
             df[f"pred_mid_iter{t}"] = preds
+            df[f"ranked_mids_iter{t}"] = ranked_mids_list
             df[f"S_iter{t}"] = S_list
             df[f"d_iter{t}"] = d_list
             df[f"delta_iter{t}"] = delta_list
