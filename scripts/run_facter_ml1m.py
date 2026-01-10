@@ -60,6 +60,7 @@ def main() -> None:
     p.add_argument("--model_id", type=str, required=True)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
+    p.add_argument("--progress", action="store_true", help="Enable tqdm progress bars in heavy loops")
 
     # FACTER hyperparams
     p.add_argument("--alpha", type=float, default=0.10)
@@ -73,8 +74,6 @@ def main() -> None:
     p.add_argument("--protected_attr", type=str, default="gender", choices=["gender", "age", "occupation"])
     p.add_argument("--k", type=int, default=10)
 
-    # Instrumentation knobs
-    p.add_argument("--progress", action="store_true", help="Enable tqdm progress bars in heavy loops")
     args = p.parse_args()
 
     # Choose device

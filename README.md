@@ -32,6 +32,11 @@ From the repo root:
 pip install -e .
 ```
 
+### 3) Test the installation
+```bash
+pytest
+```
+
 ## Download and preprocess data
 ### Download MovieLens-1M
 ```bash
@@ -61,6 +66,7 @@ python scripts/run_facter_ml1m.py \
   --seed 42 \
   --protected_attr gender \
   --max_iterations 3
+  --progress
 ```
 
 This will:
