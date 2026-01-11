@@ -3,7 +3,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Sequence, Optional
+from typing import List, Sequence, Optional, Tuple
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -177,13 +177,13 @@ class HFChatRanker:
     def _cache_path(self, key: str) -> Path:
         return self._model_cache_dir / f"{key}.json"
 
-    def rank(self, prompt_rank: str, candidate_titles: Sequence[str], system_prompt: str | None = None) -> List[int]:
+    def rank(self, prompt_rank: str, candidate_titles: Sequence[str], system_prompt: str | None = None) -> Tuple[List[int], str]:
         key = self._cache_key(prompt_rank, candidate_titles, system_prompt)
         cpath = self._cache_path(key)
         
         if cpath.exists():
             obj = json.loads(cpath.read_text(encoding="utf-8"))
-            return list(obj["ranked_indices"])
+            return list(obj["ranked_indices"]), obj.get("raw_text", "")
 
         messages = []
         if system_prompt:
@@ -231,4 +231,4 @@ class HFChatRanker:
             json.dumps({"ranked_indices": ranked, "raw_text": out}, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        return ranked
+        return ranked, out

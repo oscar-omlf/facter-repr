@@ -28,7 +28,7 @@ def run_zero_shot_ranking(
     if progress:
         it = tqdm(it, total=len(df), desc="Baseline: zero-shot ranking")
     for _, row in it:
-        ranked_idx = ranker.rank(row["prompt_rank"], row["candidate_titles"], system_prompt=system_prompt)
+        ranked_idx, raw_response = ranker.rank(row["prompt_rank"], row["candidate_titles"], system_prompt=system_prompt)
         topk_idx = ranked_idx[:k]
         mids = [int(row["candidate_mids"][i]) for i in topk_idx]
         ranked_mids.append(mids)

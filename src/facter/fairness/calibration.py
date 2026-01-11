@@ -54,11 +54,17 @@ class OfflineCalibrator:
         self.context_encoder = context_encoder
         self.cfg = cfg
 
-    def _predict_top1_mid(self, row: pd.Series, system_prompt: Optional[str]) -> int:
+    def _predict_top1_mid(self, row: pd.Series, system_prompt: Optional[str]) -> Tuple[int, List[int], str, List[int]]:
+        """Returns (top1_mid, all_ranked_mids, raw_response, ranked_indices)"""
         candidates_titles: List[str] = row["candidate_titles"]
-        ranked_idx = self.ranker.rank(row["prompt_rank"], candidates_titles, system_prompt=system_prompt)
+        candidate_mids: List[int] = row["candidate_mids"]
+        
+        # Get ranked indices from ranker
+        ranked_idx, raw_response = self.ranker.rank(row["prompt_rank"], candidates_titles, system_prompt=system_prompt)
         best_idx = ranked_idx[0]
-        return int(row["candidate_mids"][best_idx])
+        top1_mid = int(candidate_mids[best_idx])
+        
+        return top1_mid, raw_response
 
     def run(
         self,
@@ -75,12 +81,20 @@ class OfflineCalibrator:
         # 2) Predict hat{y}_i (ranking-based, choose top-1)
         # pred_mids = np.array([self._predict_top1_mid(df.iloc[i], system_prompt) for i in range(len(df))], dtype=np.int64)
         pred_mids_list = []
+        raw_responses_list = []
+
         it = range(len(df))
         if progress:
             it = tqdm(it, total=len(df), desc="Offline: rank top-1 (calibration)")
         for i in it:
-            pred_mids_list.append(self._predict_top1_mid(df.iloc[i], system_prompt))
+            top1_mid, raw_response = self._predict_top1_mid(df.iloc[i], system_prompt)
+            pred_mids_list.append(top1_mid)
+            raw_responses_list.append(raw_response)
         pred_mids = np.array(pred_mids_list, dtype=np.int64)
+        
+        # Add captured data to dataframe
+        df["system_prompt"] = system_prompt
+        df["ranker_response"] = raw_responses_list
 
         # 3) Fit W index
         ncfg = NeighborConfig(
@@ -107,8 +121,9 @@ class OfflineCalibrator:
         pred_texts = [item_text(int(m), item_db) for m in pred_mids.tolist()]
         pred_emb = self.embedder.encode_texts(pred_texts)
 
+
         return OfflineCalibrationResult(
-            cal_df=df.drop(columns=["pred_mid"]),
+            cal_df=df,
             cal_context_emb=context_emb,
             cal_pred_mid=pred_mids,
             cal_pred_emb=pred_emb,

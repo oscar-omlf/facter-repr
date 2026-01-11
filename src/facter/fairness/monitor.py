@@ -3,6 +3,7 @@ from typing import Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import json
 from tqdm.auto import tqdm
 
 from facter.models.ranker import Ranker
@@ -70,6 +71,8 @@ class FACTEROnlineMonitor:
             preds: list[int] = []
             ranked_mids_list: list[list[int]] = []
             is_viol_list: list[bool] = []
+            system_prompts_list: list[str] = []
+            ranker_responses_list: list[str] = []
 
             for i in idx_iter:
                 row = df.iloc[i]
@@ -81,9 +84,10 @@ class FACTEROnlineMonitor:
                     iteration=t,
                     max_iterations=self.cfg.max_iterations,
                 )
+                system_prompts_list.append(system_prompt)
 
                 # rank candidates
-                ranked_idx = self.ranker.rank(row["prompt_rank"], row["candidate_titles"], system_prompt=system_prompt)
+                ranked_idx, raw_response = self.ranker.rank(row["prompt_rank"], row["candidate_titles"], system_prompt=system_prompt)
                 best_idx = ranked_idx[0]
                 pred_mid = int(row["candidate_mids"][best_idx])
                 preds.append(pred_mid)
@@ -91,6 +95,7 @@ class FACTEROnlineMonitor:
                 # save full ranked list of mids
                 ranked_mids = [int(row["candidate_mids"][idx]) for idx in ranked_idx]
                 ranked_mids_list.append(ranked_mids)
+                ranker_responses_list.append(raw_response)
 
                 s, d, delta = self.scorer.score_one(
                     row=row,
@@ -116,6 +121,8 @@ class FACTEROnlineMonitor:
 
             df[f"pred_mid_iter{t}"] = preds
             df[f"ranked_mids_iter{t}"] = ranked_mids_list
+            df[f"system_prompt_iter{t}"] = system_prompts_list
+            df[f"ranker_response_iter{t}"] = ranker_responses_list
             df[f"S_iter{t}"] = S_list
             df[f"d_iter{t}"] = d_list
             df[f"delta_iter{t}"] = delta_list

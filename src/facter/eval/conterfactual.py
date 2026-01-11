@@ -101,8 +101,10 @@ def compute_cfr(
         prompt_cf = build_ranking_prompt(row_cf, cand_titles, prompt_cfg)
 
         # rank both
-        idx_orig = ranker.rank(prompt_orig, cand_titles, system_prompt=system_prompt)[: cfg.k]
-        idx_cf = ranker.rank(prompt_cf, cand_titles, system_prompt=system_prompt)[: cfg.k]
+        idx_orig, _ = ranker.rank(prompt_orig, cand_titles, system_prompt=system_prompt)
+        idx_orig = idx_orig[: cfg.k]
+        idx_cf, _ = ranker.rank(prompt_cf, cand_titles, system_prompt=system_prompt)
+        idx_cf = idx_cf[: cfg.k]
 
         mids_orig = [int(row["candidate_mids"][i]) for i in idx_orig]
         mids_cf = [int(row["candidate_mids"][i]) for i in idx_cf]
