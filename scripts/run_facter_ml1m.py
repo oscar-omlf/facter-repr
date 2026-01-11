@@ -178,7 +178,7 @@ def main() -> None:
                 "offline.S_mean": float(np.mean(cal_res.scores_S)),
                 "offline.S_max": float(np.max(cal_res.scores_S)),
             })
-            log_dataframe(cal_res.cal_df, "data/calibration_df.json", format="json")
+            log_dataframe(cal_res.cal_df, "data/calibration_df.json", format="json") # we can also change this to parquet if desired!
 
         with stage("prepare_online_artifacts", timings):
             cal_art = CalibrationArtifacts(
@@ -209,7 +209,7 @@ def main() -> None:
                     f"iter{it_log.iteration}.violations": float(it_log.violations),
                     f"iter{it_log.iteration}.S_mean": float(it_log.mean_S),
                 }, step=it_log.iteration)
-            log_dataframe(out_df, "data/online_monitor_df.json", format="json")
+            log_dataframe(out_df, "data/online_monitor_df.json", format="json") # we can also change this to parquet if desired!
 
         with stage("compute_facter_metrics", timings):
             facter_metrics = {}
