@@ -19,7 +19,7 @@ from facter.models.hf_ranker import HFChatRanker, HFChatRankerConfig
 from facter.prompting.repair import PromptRepairConfig, PromptRepairEngine
 from facter.eval.metrics import mean_recall_ndcg
 from facter.eval.baselines import evaluate_zero_shot
-from facter.tracking.mlflow import MLflowConfig, start_run, log_params, log_metrics, log_text
+from facter.tracking.mlflow import MLflowConfig, start_run, log_params, log_metrics, log_text, log_dataframe
 from facter.utils.seeding import seed_all, SeedConfig
 
 
@@ -178,6 +178,7 @@ def main() -> None:
                 "offline.S_mean": float(np.mean(cal_res.scores_S)),
                 "offline.S_max": float(np.max(cal_res.scores_S)),
             })
+            log_dataframe(cal_res.cal_df, "data/calibration_df.json", format="json")
 
         with stage("prepare_online_artifacts", timings):
             cal_art = CalibrationArtifacts(
@@ -208,6 +209,7 @@ def main() -> None:
                     f"iter{it_log.iteration}.violations": float(it_log.violations),
                     f"iter{it_log.iteration}.S_mean": float(it_log.mean_S),
                 }, step=it_log.iteration)
+            log_dataframe(out_df, "data/online_monitor_df.json", format="json")
 
         with stage("compute_facter_metrics", timings):
             facter_metrics = {}

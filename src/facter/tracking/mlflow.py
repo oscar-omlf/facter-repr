@@ -2,6 +2,8 @@ import os
 import re
 import platform
 import subprocess
+import tempfile
+from pathlib import Path
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, Optional
@@ -91,3 +93,27 @@ def log_text(text: str, artifact_path: str) -> None:
     artifact_path should include a filename, e.g., 'configs/run_config.yaml'
     """
     mlflow.log_text(text, artifact_file=artifact_path)
+
+
+def log_dataframe(df: Any, artifact_path: str, format: str = "parquet") -> None:
+    """
+    Log a pandas DataFrame as an artifact.
+    
+    Args:
+        df: pandas DataFrame to log
+        artifact_path: Path where the artifact will be saved (e.g., 'data/calibration.parquet')
+        format: File format - 'parquet', 'csv', or 'json' (default: 'parquet')
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir) / Path(artifact_path).name
+        
+        if format == "parquet":
+            df.to_parquet(tmp_path, index=False)
+        elif format == "csv":
+            df.to_csv(tmp_path, index=False)
+        elif format == "json":
+            df.to_json(tmp_path, orient="records", lines=True)
+        else:
+            raise ValueError(f"Unsupported format: {format}. Choose from 'parquet', 'csv', or 'json'.")
+        
+        mlflow.log_artifact(str(tmp_path), artifact_path=str(Path(artifact_path).parent) if Path(artifact_path).parent != Path(".") else None)
