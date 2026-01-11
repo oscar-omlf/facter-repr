@@ -79,7 +79,7 @@ def compute_cfr(
     item_db: Dict[int, Dict[str, str]],
     prompt_cfg: PromptConfig,
     cfg: CFRConfig,
-    system_prompt: str | None = None,
+    iter: Optional[int] = None,
 ) -> float:
     """
     CFR proxy via counterfactual flips:
@@ -94,6 +94,7 @@ def compute_cfr(
         # original prompt
         cand_titles = row["candidate_titles"]
         prompt_orig = row["prompt_rank"]
+        system_prompt = row[f"system_prompt_iter{iter}" if iter is not None else "system_prompt"]
 
         # counterfactual prompt: rebuild with one attr flipped, everything else constant
         row_cf = row.to_dict()

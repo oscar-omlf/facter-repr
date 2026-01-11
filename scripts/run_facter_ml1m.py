@@ -18,9 +18,11 @@ from facter.models.embedder import EmbedderConfig, TextEmbedder
 from facter.models.hf_ranker import HFChatRanker, HFChatRankerConfig
 from facter.prompting.repair import PromptRepairConfig, PromptRepairEngine
 from facter.eval.metrics import mean_recall_ndcg
-from facter.eval.baselines import evaluate_zero_shot
+from facter.eval.baselines import evaluate_zero_shot, run_zero_shot_ranking
+from facter.eval.conterfactual import compute_cfr, CFRConfig
 from facter.tracking.mlflow import MLflowConfig, start_run, log_params, log_metrics, log_text, log_dataframe
 from facter.utils.seeding import seed_all, SeedConfig
+from facter.data.prompts import PromptConfig
 
 
 def _read_split(processed_dir: Path, split: str) -> pd.DataFrame:
@@ -72,6 +74,7 @@ def main() -> None:
     p.add_argument("--min_feature_count", type=int, default=3)
     p.add_argument("--max_iterations", type=int, default=3)
     p.add_argument("--protected_attr", type=str, default="gender", choices=["gender", "age", "occupation"])
+    p.add_argument("--cfr_flip_attr", type=str, default="gender", choices=["gender", "age", "occupation"], help="Attribute to flip for counterfactual fairness evaluation")
     p.add_argument("--k", type=int, default=10)
 
     args = p.parse_args()
@@ -170,6 +173,9 @@ def main() -> None:
                 cfg=OnlineMonitorConfig(max_iterations=args.max_iterations, gamma=args.gamma, protected_key=args.protected_attr),
             )
 
+            prompt_cfg = PromptConfig(k_recs=args.k)
+            cfr_cfg = CFRConfig(flip_attr=args.cfr_flip_attr, k=args.k)
+
         with stage("offline_calibration", timings):
             # you will add tqdm inside OfflineCalibrator.run in Patch 2
             cal_res = calibrator.run(cal_df=cal_df, item_db=item_db, system_prompt=None, progress=args.progress)
@@ -190,8 +196,20 @@ def main() -> None:
 
         with stage("baseline_zero_shot", timings):
             # you will add tqdm inside evaluate_zero_shot in Patch 2
-            baseline_metrics = evaluate_zero_shot(test_df, ranker, k=args.k, progress=args.progress)
+            baseline_df = run_zero_shot_ranking(test_df, ranker, k=args.k, system_prompt=None, progress=args.progress)  
+            baseline_metrics = evaluate_zero_shot(baseline_df, ranker, k=args.k, progress=args.progress)
+            baseline_cfr = compute_cfr(
+                            df=baseline_df,
+                            ranker=ranker,
+                            embedder=embedder,
+                            item_db=item_db,
+                            prompt_cfg=prompt_cfg,
+                            cfg=cfr_cfg,
+                            iter=None
+                            )   
+            baseline_metrics[f"CFR_{args.cfr_flip_attr}"] = float(baseline_cfr)
             log_metrics({f"baseline.{k}": v for k, v in baseline_metrics.items()})
+            log_dataframe(baseline_df, "data/baseline_df.json", format="json") # we can also change this to parquet if desired!
 
         with stage("online_monitor", timings):
             # you will add tqdm inside monitor.run in Patch 2
@@ -218,9 +236,21 @@ def main() -> None:
                 targets = out_df["target_mid"].astype(int).tolist()
                 m = mean_recall_ndcg(ranked_lists, targets, k=args.k)
                 v = int(np.sum(out_df[f"is_violation_iter{it}"].to_numpy()))
+
+                cfr_metric = compute_cfr(
+                df=out_df,
+                ranker=ranker,
+                embedder=embedder,
+                item_db=item_db,
+                prompt_cfg=prompt_cfg,
+                cfg=cfr_cfg,
+                iter=it
+                )
+
                 facter_metrics[f"iter{it}.violations"] = float(v)
                 facter_metrics[f"iter{it}.Recall{args.k}"] = m[f"Recall@{args.k}"]
                 facter_metrics[f"iter{it}.NDCG{args.k}"] = m[f"NDCG@{args.k}"]
+                facter_metrics[f"iter{it}.CFR_{args.cfr_flip_attr}"] = float(cfr_metric)
 
             log_metrics(facter_metrics)
             log_text(json.dumps({"baseline": baseline_metrics, "facter": facter_metrics}, indent=2), "results/summary.json")
