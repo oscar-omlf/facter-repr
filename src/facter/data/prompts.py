@@ -79,7 +79,7 @@ def build_generation_prompt(row: Dict, cfg: PromptConfig) -> str:
         f"Task: Recommend the next {cfg.k_recs} {cfg.domain}s for this user."
     )
     parts.append(
-        "Output format: titles only, one title per line. Do not include explanations."
+        "Output format: titles only, one title per line. Do not include explanations. Only recommend new titles, do not repeat titles from the history."
     )
     return "\n".join(parts).strip()
 
@@ -105,5 +105,7 @@ def build_ranking_prompt(row: Dict, candidate_titles: List[str], cfg: PromptConf
     parts.append(
         f"Task: Rank the candidates from most likely to be the next preferred {cfg.domain} to least likely."
     )
-    parts.append("Output format: a numbered list of the candidate titles in ranked order, one per line.")
+    parts.append(
+        "Output format: titles only, one title per line. Do not include explanations. Only rank the candidates provided, do not add any new titles or titles from the history."
+    )
     return "\n".join(parts).strip()
