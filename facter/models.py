@@ -1,6 +1,7 @@
 """
 models.py: Model and embedder loading utilities for FACTER.
 """
+
 from __future__ import annotations
 
 import logging
@@ -15,7 +16,9 @@ logger = logging.getLogger(__name__)
 
 def load_embedder(prefer_public_finetuned: bool = True):
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    name = Config.EMBEDDER_ALT_PUBLIC if prefer_public_finetuned
+    name = (
+        Config.EMBEDDER_ALT_PUBLIC if prefer_public_finetuned else Config.EMBEDDER_NAME
+    )
     logger.info(f"Loading embedder: {name}")
     return SentenceTransformer(name).to(device)
 

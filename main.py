@@ -7,23 +7,29 @@ main.py (updated): Paper-aligned FACTER pipeline with:
 - CFR via counterfactual attribute flips (neutral system prompt)
 - Zero-shot baseline (open-ended) with same mapping and metrics
 """
+
 from __future__ import annotations
 
 import json
+
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
+from facter.baseline_zero_shot import NEUTRAL_SYSTEM_PROMPT, run_zero_shot_openended
+from facter.catalog_map import CatalogMapper
 from facter.config import Config
 from facter.data import DatasetLoader
-from facter.models import load_models
 from facter.fairness import ConformalFairnessValidator, _group_key
+from facter.metrics_fairness import compute_cfr, compute_snsr_snsv
+from facter.models import load_models
 from facter.prompt_engine import FairPromptEngine
-from facter.utils import setup_logging, generate_recommendations, evaluate_at_k_from_lists, evaluate_valid_at_k
-
-from facter.catalog_map import CatalogMapper
-from facter.metrics_fairness import compute_snsr_snsv, compute_cfr
-from facter.baseline_zero_shot import run_zero_shot_openended, NEUTRAL_SYSTEM_PROMPT
+from facter.utils import (
+    evaluate_at_k_from_lists,
+    evaluate_valid_at_k,
+    generate_recommendations,
+    setup_logging,
+)
 
 
 def main():
@@ -57,7 +63,9 @@ def main():
         # Offline calibration (FASTER: use rank-1 from open-ended)
         # -------------------------
         logger.info("Calibration generation (open-ended Top-K)...")
-        cal_recs = generate_recommendations(train_df["prompt"].tolist(), system_msg="", tokenizer=tokenizer, model=model)
+        cal_recs = generate_recommendations(
+            train_df["prompt"].tolist(), system_msg="", tokenizer=tokenizer, model=model
+        )
 
         cal_groups = [
             _group_key({k: str(row[k]) for k in Config.PROTECTED_ATTRIBUTES})
@@ -90,9 +98,16 @@ def main():
             zs_map.append(mr.mapped_titles)
             zs_valid.append(mr.valid_at_k)
 
-        zs_acc = evaluate_at_k_from_lists(zs_map, test_df["target_title"].tolist(), k=Config.TOP_K_RECS)
+        zs_acc = evaluate_at_k_from_lists(
+            zs_map, test_df["target_title"].tolist(), k=Config.TOP_K_RECS
+        )
         zs_validm = evaluate_valid_at_k(zs_valid, k=Config.TOP_K_RECS)
-        zs_sns = compute_snsr_snsv(test_df.assign(mapped_recs=zs_map), embedder, recs_col="mapped_recs", group_mode="tuple")
+        zs_sns = compute_snsr_snsv(
+            test_df.assign(mapped_recs=zs_map),
+            embedder,
+            recs_col="mapped_recs",
+            group_mode="tuple",
+        )
         zs_cfr = compute_cfr(
             test_df,
             embedder,
@@ -135,9 +150,13 @@ def main():
                 g = _group_key(attrs)
 
                 system_msg = prompt_engine.generate_system_prompt(current_group=g)
-                user_prompt = prompt_engine.update_prompt(row["prompt"], current_group=g)
+                user_prompt = prompt_engine.update_prompt(
+                    row["prompt"], current_group=g
+                )
 
-                recs = generate_recommendations([user_prompt], system_msg, tokenizer, model)[0]
+                recs = generate_recommendations(
+                    [user_prompt], system_msg, tokenizer, model
+                )[0]
                 # map
                 mr = mapper.map_list(recs, k=Config.TOP_K_RECS, min_sim=0.65)
                 mapped = mr.mapped_titles
@@ -146,7 +165,7 @@ def main():
                     context=row["context"],
                     prompt=row["prompt"],
                     attrs=attrs,
-                    recs=mapped,             # IMPORTANT: run validator on mapped titles
+                    recs=mapped,  # IMPORTANT: run validator on mapped titles
                     y_true_title=row["target_title"],
                 )
 
@@ -165,10 +184,14 @@ def main():
             eval_df["Q"] = thresholds
 
             viol_rate = float(np.mean(is_viol)) if is_viol else 0.0
-            acc = evaluate_at_k_from_lists(facter_mapped, eval_df["target_title"].tolist(), k=Config.TOP_K_RECS)
+            acc = evaluate_at_k_from_lists(
+                facter_mapped, eval_df["target_title"].tolist(), k=Config.TOP_K_RECS
+            )
             validm = evaluate_valid_at_k(facter_valid, k=Config.TOP_K_RECS)
 
-            sns = compute_snsr_snsv(eval_df, embedder, recs_col="mapped_recs", group_mode="tuple")
+            sns = compute_snsr_snsv(
+                eval_df, embedder, recs_col="mapped_recs", group_mode="tuple"
+            )
             # CFR (neutral) can be computed once per dataset; optional to compute per-iteration.
             # Here we compute once in iteration 0 for speed; set to None otherwise.
             cfr = None
@@ -194,9 +217,15 @@ def main():
                 "Q_last": float(eval_df["Q"].iloc[-1]),
             }
             if cfr is not None:
-                record.update({"CFR": cfr.CFR, "CFR_valid_rate": cfr.valid_rate, "CFR_n_pairs": cfr.n_pairs})
+                record.update(
+                    {
+                        "CFR": cfr.CFR,
+                        "CFR_valid_rate": cfr.valid_rate,
+                        "CFR_n_pairs": cfr.n_pairs,
+                    }
+                )
 
-            logger.info(f"Iter {it+1}: {json.dumps(record, indent=2)}")
+            logger.info(f"Iter {it + 1}: {json.dumps(record, indent=2)}")
             history.append(record)
 
             if it >= 2 and viol_rate < 0.10:
@@ -205,7 +234,9 @@ def main():
         results[dataset_name] = {
             "baseline": baseline_block,
             "history": history,
-            "Q_alpha_init": float(validator.adaptive_threshold) if validator.adaptive_threshold is not None else None,
+            "Q_alpha_init": float(validator.adaptive_threshold)
+            if validator.adaptive_threshold is not None
+            else None,
         }
 
     logger.info("\n=== FINAL RESULTS ===\n" + json.dumps(results, indent=2))

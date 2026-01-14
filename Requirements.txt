@@ -13,11 +13,11 @@ psutil>=5.8
 python-dotenv>=0.21
 
 # Optional/Recommended for research and development
-# rich>=13.0           # Advanced logging (optional)
-# loguru>=0.7          # Advanced logging (optional)
-# jupyter              # Jupyter notebook support (optional)
-# platformdirs         # Mac/Windows compatibility (optional)
-# scipy>=1.7           # Advanced metrics (optional)
+rich>=13.0           # Advanced logging (optional)
+loguru>=0.7          # Advanced logging (optional)
+jupyter              # Jupyter notebook support (optional)
+platformdirs         # Mac/Windows compatibility (optional)
+scipy>=1.7           # Advanced metrics (optional)
 
 # Environment and compatibility notes (not for pip, for user reference only):
 # - difflib: standard library, no need to install

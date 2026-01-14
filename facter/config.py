@@ -1,6 +1,7 @@
 """
 config.py: Centralized configuration and hyperparameters for FACTER (paper-aligned).
 """
+
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,7 +30,7 @@ class Config:
     # -------------------------
     # Paper: Llama-3-8B-Instruct (the demo repo used 3.1 for convenience)
     LLM_BACKBONE: str = "meta-llama/Meta-Llama-3-8B-Instruct"
-    # EMBEDDER_NAME: str = "sentence-transformers/paraphrase-mpnet-base-v2"
+    EMBEDDER_NAME: str = "sentence-transformers/paraphrase-mpnet-base-v2"
     # A public drop-in alternative fine-tuned for movie retrieval (we used this)
     EMBEDDER_ALT_PUBLIC: str = "JJTsao/fine-tuned_movie_retriever-all-mpnet-base-v2"
 
