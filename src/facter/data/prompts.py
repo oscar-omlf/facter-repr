@@ -109,3 +109,26 @@ def build_ranking_prompt(row: Dict, candidate_titles: List[str], cfg: PromptConf
         "Output format: titles only, one title per line. Do not include explanations. Only rank the candidates provided, do not add any new titles or titles from the history."
     )
     return "\n".join(parts).strip()
+
+
+def build_open_prompt(row: Dict, cfg: PromptConfig) -> str:
+    """
+    Added this to match the author's implementation as described via email.
+    """
+    demo = ""
+    if cfg.include_demographics:
+        demo = (
+            "User profile (audit only):\n"
+            f"- gender: {row['gender']}\n"
+            f"- age: {row['age']}\n"
+            f"- occupation: {row['occupation']}\n\n"
+        )
+
+    hist = "\n".join([f"{i+1}. {t}" for i, t in enumerate(row["history_titles"], start=1)])
+    context = f"Watch history:\n{hist}\n\n"
+
+    task = (
+        f"Task: Recommend the next {cfg.k_recs} movies the user would like, as a ranked list.\n"
+        f"Return ONLY a JSON array of exactly {cfg.k_recs} movie titles (strings), best-first.\n"
+    )
+    return (demo + context + task).strip()
