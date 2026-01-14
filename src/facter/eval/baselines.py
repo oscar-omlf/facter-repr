@@ -56,7 +56,10 @@ def evaluate_zero_shot(
     k: int = 10,
     progress: bool = False,
 ) -> Dict[str, float]:
-    ranked_mids = run_zero_shot_ranking(df, ranker, k=k, system_prompt=None, progress=progress)["ranked_mids"].tolist()
+    if "ranked_mids" not in df:
+        df = run_zero_shot_ranking(df, ranker, k=k, system_prompt=None, progress=progress)
+
+    ranked_mids = df["ranked_mids"].tolist()
     targets = df["target_mid"].astype(int).tolist()
     return mean_recall_ndcg(ranked_mids, targets, k=k)
 

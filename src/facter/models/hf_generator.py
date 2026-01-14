@@ -1,6 +1,6 @@
 import json, re
 from dataclasses import dataclass
-from typing import List, Sequence
+from typing import List, Sequence, Optional
 
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -43,36 +43,60 @@ def parse_json_list(text: str, k: int) -> List[str]:
         if len(out) >= k: break
     return out
 
+
 class HFOpenGenerator:
     def __init__(self, cfg: HFGenConfig):
         self.cfg = cfg
         self.tokenizer = AutoTokenizer.from_pretrained(cfg.model_id, use_fast=True)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+
         self.model = AutoModelForCausalLM.from_pretrained(
             cfg.model_id,
             device_map="auto" if torch.cuda.is_available() else None,
-            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float16,
+            torch_dtype=dtype,
         )
         self.model.eval()
 
     @torch.inference_mode()
-    def generate_topk(self, prompts: Sequence[str], system_prompt: str, k: int) -> List[List[str]]:
+    def generate_topk(
+        self,
+        prompts: Sequence[str],
+        system_prompts: Sequence[Optional[str]],
+        k: int,
+    ) -> List[List[str]]:
+        if len(prompts) != len(system_prompts):
+            raise ValueError("prompts and system_prompts must have the same length")
+
         out_all: List[List[str]] = []
         device = self.model.device
         do_sample = self.cfg.temperature > 0.0
 
         for i in range(0, len(prompts), self.cfg.batch_size):
-            batch = list(prompts[i:i+self.cfg.batch_size])
-            messages_batch = []
-            for p in batch:
-                msgs = [{"role":"system","content":system_prompt},{"role":"user","content":p}]
-                if hasattr(self.tokenizer, "apply_chat_template"):
-                    messages_batch.append(self.tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True))
-                else:
-                    messages_batch.append(f"SYSTEM:\n{system_prompt}\n\nUSER:\n{p}\n\nASSISTANT:\n")
+            batch_prompts = list(prompts[i : i + self.cfg.batch_size])
+            batch_systems = list(system_prompts[i : i + self.cfg.batch_size])
 
-            toks = self.tokenizer(messages_batch, return_tensors="pt", padding=True, truncation=True).to(device)
+            rendered_batch = []
+            for p, sys in zip(batch_prompts, batch_systems):
+                sys = sys or ""
+                msgs = [
+                    {"role": "system", "content": sys},
+                    {"role": "user", "content": p},
+                ]
+                if hasattr(self.tokenizer, "apply_chat_template"):
+                    rendered = self.tokenizer.apply_chat_template(
+                        msgs, tokenize=False, add_generation_prompt=True
+                    )
+                else:
+                    rendered = f"SYSTEM:\n{sys}\n\nUSER:\n{p}\n\nASSISTANT:\n"
+                rendered_batch.append(rendered)
+
+            toks = self.tokenizer(
+                rendered_batch, return_tensors="pt", padding=True, truncation=True
+            ).to(device)
+
             gen = self.model.generate(
                 **toks,
                 max_new_tokens=self.cfg.max_new_tokens,
@@ -82,9 +106,10 @@ class HFOpenGenerator:
                 repetition_penalty=self.cfg.repetition_penalty,
                 pad_token_id=self.tokenizer.eos_token_id,
             )
+
             # decode only generated continuation
-            for j in range(len(batch)):
-                cont = gen[j][toks["input_ids"].shape[-1]:]
+            for j in range(len(batch_prompts)):
+                cont = gen[j][toks["input_ids"].shape[-1] :]
                 txt = self.tokenizer.decode(cont, skip_special_tokens=True)
                 out_all.append(parse_json_list(txt, k))
         return out_all

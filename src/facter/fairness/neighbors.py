@@ -97,7 +97,7 @@ class CrossGroupNeighborIndex:
 
     def eligible_neighbors_for_delta(self, i: int) -> np.ndarray:
         """
-        Returns neighbor indices j with W_ij > tau_rho (paper τ_ρ gate used in Δ).
+        Returns neighbor indices j with W_ij > tau_rho (paper \tau_\rho gate used in \Delta).
         """
         idx = self._neighbors[i]
         s = self._sims[i]

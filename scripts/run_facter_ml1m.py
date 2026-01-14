@@ -15,11 +15,12 @@ from facter.fairness.context_encoder import ContextEncoder, ContextEncodingConfi
 from facter.fairness.monitor import FACTEROnlineMonitor, OnlineMonitorConfig
 from facter.fairness.online import CalibrationArtifacts, OnlineScorer, OnlineScoringConfig
 from facter.models.embedder import EmbedderConfig, TextEmbedder
+from facter.models.hf_generator import HFOpenGenerator, HFGenConfig
 from facter.models.hf_ranker import HFChatRanker, HFChatRankerConfig
 from facter.prompting.repair import PromptRepairConfig, PromptRepairEngine
 from facter.eval.metrics import mean_recall_ndcg
 from facter.eval.baselines import evaluate_zero_shot, run_zero_shot_ranking
-from facter.eval.conterfactual import compute_cfr, CFRConfig
+from facter.eval.counterfactual import compute_cfr, CFRConfig
 from facter.tracking.mlflow import MLflowConfig, start_run, log_params, log_metrics, log_text, log_dataframe
 from facter.utils.seeding import seed_all, SeedConfig
 from facter.data.prompts import PromptConfig
@@ -74,8 +75,9 @@ def main() -> None:
     p.add_argument("--min_feature_count", type=int, default=3)
     p.add_argument("--max_iterations", type=int, default=3)
     p.add_argument("--protected_attr", type=str, default="gender", choices=["gender", "age", "occupation"])
-    p.add_argument("--cfr_flip_attr", type=str, default="gender", choices=["gender", "age", "occupation"], help="Attribute to flip for counterfactual fairness evaluation")
+    p.add_argument("--cfr_flip_attr", type=str, default="gender", choices=["gender", "age", "occupation"])
     p.add_argument("--k", type=int, default=10)
+    p.add_argument("--predict_mode", type=str, default="rank", choices=["rank", "open"])
 
     args = p.parse_args()
 
@@ -85,25 +87,28 @@ def main() -> None:
     else:
         device = args.device
 
-    # Make MLflow DB path absolute (avoids “wrong CWD” issues)
+    # Make MLflow DB path absolute
     repo_root = Path(__file__).resolve().parents[1]
     db_path = (repo_root / "mlflow.db").resolve()
 
     mcfg = MLflowConfig(
         tracking_uri=f"sqlite:///{db_path}",
         experiment_name="facter-repro",
-        run_name=f"ml1m_{args.model_id}_{args.protected_attr}_seed{args.seed}",
+        run_name=f"ml1m_{args.model_id}_{args.protected_attr}_seed{args.seed}_{args.predict_mode}",
     )
 
     timings: dict[str, float] = {}
     total_t0 = time.perf_counter()
 
-    with start_run(mcfg, tags={"dataset": "ml-1m", "model_id": args.model_id, "protected_attr": args.protected_attr}):
-        # Log params immediately so the run appears right away
+    def _norm_title(s: str) -> str:
+        return str(s).strip().lower()
+
+    with start_run(mcfg, tags={"dataset": "ml-1m", "model_id": args.model_id, "protected_attr": args.protected_attr, "predict_mode": args.predict_mode}):
         log_params({
             "seed": args.seed,
             "device": device,
             "model_id": args.model_id,
+            "predict_mode": args.predict_mode,
             "alpha": args.alpha,
             "lambda_fairness": args.lambda_fairness,
             "tau_rho": args.tau_rho,
@@ -132,9 +137,24 @@ def main() -> None:
             item_db = build_item_db(frames.movies)
             log_metrics({"data.items_n": float(len(item_db))})
 
+            # title->mid index for open mode
+            title_to_mid = {}
+            for mid, info in item_db.items():
+                title = info.get("title", "")
+                if title:
+                    title_to_mid[_norm_title(title)] = int(mid)
+
         with stage("init_models", timings):
-            embedder = TextEmbedder(EmbedderConfig(device=device))
+            embedder = TextEmbedder(EmbedderConfig(device=device))            
             ranker = HFChatRanker(HFChatRankerConfig(model_id=args.model_id))
+            
+            generator = None
+            if args.predict_mode == "open":
+                generator = HFOpenGenerator(
+                    HFGenConfig(model_id=args.model_id),
+                    tokenizer=ranker.tokenizer,
+                    model=ranker.model,
+                )
 
         with stage("init_facter_components", timings):
             ctx = ContextEncoder(embedder, ContextEncodingConfig(max_history_items=5))
@@ -177,14 +197,21 @@ def main() -> None:
             cfr_cfg = CFRConfig(flip_attr=args.cfr_flip_attr, k=args.k)
 
         with stage("offline_calibration", timings):
-            # you will add tqdm inside OfflineCalibrator.run in Patch 2
-            cal_res = calibrator.run(cal_df=cal_df, item_db=item_db, system_prompt=None, progress=args.progress)
+            cal_res = calibrator.run(
+                cal_df=cal_df,
+                item_db=item_db,
+                system_prompt=None,
+                progress=args.progress,
+                predict_mode=args.predict_mode,
+                generator=generator,
+                prompt_cfg=prompt_cfg,
+            )
             log_metrics({
                 "offline.q_alpha0": float(cal_res.q_alpha0),
                 "offline.S_mean": float(np.mean(cal_res.scores_S)),
                 "offline.S_max": float(np.max(cal_res.scores_S)),
             })
-            log_dataframe(cal_res.cal_df, "data/calibration_df.json", format="json") # we can also change this to parquet if desired!
+            log_dataframe(cal_res.cal_df, "data/calibration_df.json", format="json")
 
         with stage("prepare_online_artifacts", timings):
             cal_art = CalibrationArtifacts(
@@ -195,68 +222,86 @@ def main() -> None:
             )
 
         with stage("baseline_zero_shot", timings):
-            # you will add tqdm inside evaluate_zero_shot in Patch 2
-            baseline_df = run_zero_shot_ranking(test_df, ranker, k=args.k, system_prompt=None, progress=args.progress)  
-            baseline_metrics = evaluate_zero_shot(baseline_df, ranker, k=args.k, progress=args.progress)
+            # Baseline is ALWAYS ranking (per your requirement).
+            baseline_df = run_zero_shot_ranking(
+                test_df.copy(), ranker, k=args.k, system_prompt=None, progress=args.progress
+            )
+
+            baseline_metrics = evaluate_zero_shot(
+                baseline_df, ranker, k=args.k, progress=args.progress
+            )
+
             baseline_cfr = compute_cfr(
-                            df=baseline_df,
-                            ranker=ranker,
-                            embedder=embedder,
-                            item_db=item_db,
-                            prompt_cfg=prompt_cfg,
-                            cfg=cfr_cfg,
-                            iter=None
-                            )   
+                df=baseline_df,
+                ranker=ranker,
+                embedder=embedder,
+                item_db=item_db,
+                prompt_cfg=prompt_cfg,
+                cfg=cfr_cfg,
+                iter=None,
+            )
             baseline_metrics[f"CFR_{args.cfr_flip_attr}"] = float(baseline_cfr)
             log_metrics({f"baseline.{k}": v for k, v in baseline_metrics.items()})
-            log_dataframe(baseline_df, "data/baseline_df.json", format="json") # we can also change this to parquet if desired!
+            log_dataframe(baseline_df, "data/baseline_df.json", format="json")
 
         with stage("online_monitor", timings):
-            # you will add tqdm inside monitor.run in Patch 2
             out_df, logs = monitor.run(
                 test_df=test_df,
                 item_db=item_db,
                 cal_artifacts=cal_art,
                 q_alpha0=cal_res.q_alpha0,
                 progress=args.progress,
+                predict_mode=args.predict_mode,
+                generator=generator,
+                prompt_cfg=prompt_cfg,
+                title_to_mid=title_to_mid if args.predict_mode == "open" else None,
             )
-            # log per-iteration “heartbeat” metrics
+
             for it_log in logs:
                 log_metrics({
                     f"iter{it_log.iteration}.q_alpha_end": float(it_log.q_alpha),
                     f"iter{it_log.iteration}.violations": float(it_log.violations),
                     f"iter{it_log.iteration}.S_mean": float(it_log.mean_S),
                 }, step=it_log.iteration)
-            log_dataframe(out_df, "data/online_monitor_df.json", format="json") # we can also change this to parquet if desired!
+
+            log_dataframe(out_df, "data/online_monitor_df.json", format="json")
 
         with stage("compute_facter_metrics", timings):
             facter_metrics = {}
+            targets = out_df["target_mid"].astype(int).tolist()
+
             for it in range(1, args.max_iterations + 1):
-                ranked_lists = out_df[f"ranked_mids_iter{it}"]
-                targets = out_df["target_mid"].astype(int).tolist()
+                if args.predict_mode == "rank":
+                    ranked_lists = out_df[f"ranked_mids_iter{it}"].tolist()
+                else:
+                    ranked_lists = out_df[f"generated_mids_iter{it}"].tolist()
+
                 m = mean_recall_ndcg(ranked_lists, targets, k=args.k)
                 v = int(np.sum(out_df[f"is_violation_iter{it}"].to_numpy()))
-
-                cfr_metric = compute_cfr(
-                df=out_df,
-                ranker=ranker,
-                embedder=embedder,
-                item_db=item_db,
-                prompt_cfg=prompt_cfg,
-                cfg=cfr_cfg,
-                iter=it
-                )
 
                 facter_metrics[f"iter{it}.violations"] = float(v)
                 facter_metrics[f"iter{it}.Recall{args.k}"] = m[f"Recall@{args.k}"]
                 facter_metrics[f"iter{it}.NDCG{args.k}"] = m[f"NDCG@{args.k}"]
-                facter_metrics[f"iter{it}.CFR_{args.cfr_flip_attr}"] = float(cfr_metric)
+
+                # CFR remains rank-based in this implementation; if you want CFR for open mode,
+                # we should implement an open-mode CFR function that calls the generator.
+                if args.predict_mode == "rank":
+                    cfr_metric = compute_cfr(
+                        df=out_df,
+                        ranker=ranker,
+                        embedder=embedder,
+                        item_db=item_db,
+                        prompt_cfg=prompt_cfg,
+                        cfg=cfr_cfg,
+                        iter=it,
+                    )
+                    facter_metrics[f"iter{it}.CFR_{args.cfr_flip_attr}"] = float(cfr_metric)
 
             log_metrics(facter_metrics)
             log_text(json.dumps({"baseline": baseline_metrics, "facter": facter_metrics}, indent=2), "results/summary.json")
 
         with stage("save_outputs", timings):
-            out_path = Path(args.processed_dir) / "runs" / f"run_{args.model_id.replace('/', '_')}_{args.protected_attr}.parquet"
+            out_path = Path(args.processed_dir) / "runs" / f"run_{args.model_id.replace('/', '_')}_{args.protected_attr}_{args.predict_mode}.parquet"
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_df.to_parquet(out_path, index=False)
             log_text(str(out_path), "results/output_path.txt")

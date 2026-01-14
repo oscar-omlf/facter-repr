@@ -59,10 +59,37 @@ class PromptRepairEngine:
         genres = tuple([g.strip() for g in genres_str.split("|") if g.strip()]) if genres_str else tuple()
         return title, genres
 
-    def add_violation(self, protected_value: str, pred_mid: int) -> None:
-        title, genres = self._extract_features_movielens(pred_mid)
-        self.buffer.add(ViolationEntry(a_value=str(protected_value), pred_mid=int(pred_mid),
-                                       pred_title=title, pred_genres=genres))
+    def add_violation(self, protected_value: str, pred_mid: Optional[int] = None, pred_title: Optional[str] = None) -> None:
+        """
+        Record a violation in the FIFO buffer.
+
+        Rank mode: supply pred_mid and we extract MovieLens title/genres from item_db.
+        Open mode: if pred_mid is unavailable or unmapped, supply pred_title and we store
+                title-only with empty genre features.
+        """
+        if pred_mid is not None and int(pred_mid) in self.item_db:
+            title, genres = self._extract_features_movielens(int(pred_mid))
+            self.buffer.add(
+                ViolationEntry(
+                    a_value=str(protected_value),
+                    pred_mid=int(pred_mid),
+                    pred_title=title,
+                    pred_genres=genres,
+                )
+            )
+            return
+
+        t = (pred_title or "").strip()
+        if not t:
+            t = "UNKNOWN_GENERATION"
+        self.buffer.add(
+            ViolationEntry(
+                a_value=str(protected_value),
+                pred_mid=int(pred_mid) if pred_mid is not None else -1,
+                pred_title=t,
+                pred_genres=tuple(),
+            )
+        )
 
     def mine_avoid_rules(self, a_value: str) -> List[str]:
         """

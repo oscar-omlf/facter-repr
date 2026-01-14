@@ -5,8 +5,10 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
+from facter.data.prompts import PromptConfig, build_open_prompt
 from facter.models.ranker import Ranker
 from facter.models.embedder import TextEmbedder
+from facter.models.generator import Generator
 from facter.fairness.context_encoder import ContextEncoder
 from facter.fairness.neighbors import CrossGroupNeighborIndex, NeighborConfig
 from facter.fairness.scoring import NonconformityScorer, ScoreConfig, item_text
@@ -28,6 +30,7 @@ class OfflineCalibrationResult:
     cal_df: pd.DataFrame
     cal_context_emb: np.ndarray
     cal_pred_mid: np.ndarray
+    cal_pred_text: list[str]
     cal_pred_emb: np.ndarray
     scores_S: np.ndarray
     scores_d: np.ndarray
@@ -72,31 +75,86 @@ class OfflineCalibrator:
         item_db: Dict[int, Dict[str, str]],
         system_prompt: Optional[str] = None,
         progress: bool = False,
+        predict_mode: str = "rank",  # "rank" | "open"
+        generator: Optional[Generator] = None,
+        prompt_cfg: Optional[PromptConfig] = None,
     ) -> OfflineCalibrationResult:
+        """
+        Offline calibration supporting rank-mode and open-generation mode.
+
+        Rank-mode:
+        - Use ranker to select top-1 mid from candidate set.
+        - pred_text is item_text(pred_mid).
+
+        Open-mode:
+        - Use generator to produce top-k titles.
+        - Map top-1 title to mid if possible (optional).
+        - pred_text is item_text(mapped_mid) if mapped else raw title.
+
+        Returns OfflineCalibrationResult with cal_pred_emb computed from pred_text,
+        so online scoring uses the same output embedding space.
+        """
         df = cal_df.reset_index(drop=True).copy()
 
         # 1) Enc(x)
         context_emb = self.context_encoder.encode_df(df)  # [N,D] normalized
 
-        # 2) Predict hat{y}_i (ranking-based, choose top-1)
-        # pred_mids = np.array([self._predict_top1_mid(df.iloc[i], system_prompt) for i in range(len(df))], dtype=np.int64)
-        pred_mids_list = []
-        raw_responses_list = []
+        pred_mids_list: list[int] = []
+        pred_texts_list: list[str] = []
+        raw_responses_list: list[str] = []
 
         it = range(len(df))
         if progress:
-            it = tqdm(it, total=len(df), desc="Offline: rank top-1 (calibration)")
-        for i in it:
-            top1_mid, raw_response = self._predict_top1_mid(df.iloc[i], system_prompt)
-            pred_mids_list.append(top1_mid)
-            raw_responses_list.append(raw_response)
+            it = tqdm(it, total=len(df), desc=f"Offline: predict (mode={predict_mode})")
+
+        if predict_mode == "rank":
+            for i in it:
+                top1_mid, raw_response = self._predict_top1_mid(df.iloc[i], system_prompt)
+                pred_mids_list.append(int(top1_mid))
+                pred_texts_list.append(item_text(int(top1_mid), item_db))
+                raw_responses_list.append(raw_response)
+
+        elif predict_mode == "open":
+            if generator is None or prompt_cfg is None:
+                raise ValueError("open mode requires generator and prompt_cfg")
+
+            # Build prompts
+            prompts = [build_open_prompt(df.iloc[i].to_dict(), prompt_cfg) for i in range(len(df))]
+            system_prompts = [system_prompt] * len(df)
+
+            # Generate
+            gen_lists = generator.generate_topk(prompts, system_prompts, k=prompt_cfg.k_recs)
+
+            # Minimal title->mid mapping (exact match on item_db title)
+            # You can replace this with the more robust normalization index used in the script.
+            title_to_mid: Dict[str, int] = {}
+            for mid, info in item_db.items():
+                title_to_mid[str(info.get("title", "")).strip().lower()] = int(mid)
+
+            for titles in gen_lists:
+                top1_title = (titles[0] if titles else "").strip()
+                raw_responses_list.append(json.dumps(titles, ensure_ascii=False))
+
+                mid = title_to_mid.get(top1_title.lower(), -1)
+                pred_mids_list.append(int(mid))
+
+                if mid != -1:
+                    pred_texts_list.append(item_text(int(mid), item_db))
+                else:
+                    pred_texts_list.append(top1_title if top1_title else "UNKNOWN_GENERATION")
+
+        else:
+            raise ValueError("predict_mode must be 'rank' or 'open'")
+
         pred_mids = np.array(pred_mids_list, dtype=np.int64)
-        
-        # Add captured data to dataframe
+
+        # Store for logging / reuse
         df["system_prompt"] = system_prompt
         df["ranker_response"] = raw_responses_list
+        df["pred_mid"] = pred_mids
+        df["pred_text"] = pred_texts_list
 
-        # 3) Fit W index
+        # 3) Fit neighbor index
         ncfg = NeighborConfig(
             protected_cols=self.cfg.protected_cols,
             tau_rho=self.cfg.tau_rho,
@@ -106,21 +164,17 @@ class OfflineCalibrator:
         nidx = CrossGroupNeighborIndex(ncfg)
         nidx.fit(df, context_emb)
 
-        # 4) Compute S_i
-        # Add a column to reuse NonconformityScorer
-        df["pred_mid"] = pred_mids
+        # 4) Compute S_i using pred_text in open mode
         scfg = ScoreConfig(lambda_fairness=self.cfg.lambda_fairness, tau_rho=self.cfg.tau_rho)
         scorer = NonconformityScorer(self.embedder, scfg)
 
-        S, d, delta = scorer.compute(df, "pred_mid", item_db, nidx)
+        if predict_mode == "rank":
+            S, d, delta, pred_emb = scorer.compute(df, pred_mid_col="pred_mid", item_db=item_db, neighbor_index=nidx)
+        else:
+            S, d, delta, pred_emb = scorer.compute(df, pred_mid_col=None, item_db=item_db, neighbor_index=nidx, pred_text_col="pred_text")
 
-        # 5) Compute Q_alpha^(0)
+        # 5) Quantile
         q0 = conformal_quantile(S, alpha=self.cfg.alpha)
-
-        # Precompute pred embeddings for online use
-        pred_texts = [item_text(int(m), item_db) for m in pred_mids.tolist()]
-        pred_emb = self.embedder.encode_texts(pred_texts)
-
 
         return OfflineCalibrationResult(
             cal_df=df,

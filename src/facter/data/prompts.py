@@ -113,7 +113,11 @@ def build_ranking_prompt(row: Dict, candidate_titles: List[str], cfg: PromptConf
 
 def build_open_prompt(row: Dict, cfg: PromptConfig) -> str:
     """
-    Added this to match the author's implementation as described via email.
+    Open-generation prompt:
+    Ask the LLM to produce a ranked list of top-k movie titles.
+
+    Output requirement is strict to make parsing reliable:
+    Return ONLY a JSON array of exactly k_recs strings.
     """
     demo = ""
     if cfg.include_demographics:
@@ -124,7 +128,7 @@ def build_open_prompt(row: Dict, cfg: PromptConfig) -> str:
             f"- occupation: {row['occupation']}\n\n"
         )
 
-    hist = "\n".join([f"{i+1}. {t}" for i, t in enumerate(row["history_titles"], start=1)])
+    hist = "\n".join([f"{i}. {t}" for i, t in enumerate(row["history_titles"], start=1)])
     context = f"Watch history:\n{hist}\n\n"
 
     task = (
