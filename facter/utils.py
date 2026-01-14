@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import json
 from difflib import SequenceMatcher
 from typing import List, Optional, Tuple, Dict
 
@@ -41,50 +42,63 @@ def _best_fuzzy_match(a: str, b: str) -> float:
 
 
 def parse_ranked_list(text: str, k: int) -> List[str]:
-    """
-    Parse a model output into a list of titles.
-    Prefers JSON array; otherwise parse numbered/bulleted lines.
-    """
     if not text:
         return []
 
-    # try JSON array
-    m = re.search(r"\[[\s\S]*\]", text)
+    # 1. Pre-process to handle common LLM "JSON-ish" errors
+    # Replace smart quotes with standard quotes
+    sanitized_text = text.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
+
+    # 2. Try JSON array extraction
+    m = re.search(r"\[[\s\S]*\]", sanitized_text)
     if m:
+        json_str = m.group(0)
+        # Remove trailing commas before a closing bracket (common LLM error)
+        json_str = re.sub(r",\s*\]", "]", json_str)
         try:
-            arr = json.loads(m.group(0))
+            arr = json.loads(json_str)
             if isinstance(arr, list):
-                arr = [str(x).strip() for x in arr if str(x).strip()]
-                # unique preserve order
-                seen, out = set(), []
+                out = []
+                seen = set()
                 for x in arr:
-                    if x not in seen:
-                        out.append(x)
-                        seen.add(x)
+                    val = str(x).strip()
+                    if val and val not in seen:
+                        out.append(val)
+                        seen.add(val)
                     if len(out) >= k:
                         break
                 return out
         except Exception:
-            pass
+            pass # Fall back if JSON is truly malformed
 
-    # fallback parse lines
+    # 3. Improved Fallback Parse
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     out = []
+    seen = set()
+    
+    # Common conversational prefixes to ignore
+    ignore_patterns = [r"based on", r"here is", r"here're", r"recommended", r"note that"]
+
     for ln in lines:
-        ln = re.sub(r"^\s*[\-\*\d\.\)\:]+\s*", "", ln).strip()
-        if ln:
-            out.append(ln)
+        # Clean bullets/numbers
+        clean_ln = re.sub(r"^\s*[\-\*\d\.\)\:\[\]]+\s*", "", ln).strip()
+        # Remove wrapping quotes if they exist
+        clean_ln = clean_ln.strip('"').strip("'")
+        
+        # Skip if line is empty, too long (likely a sentence), or matches ignore list
+        if not clean_ln or len(clean_ln) > 100:
+            continue
+        if any(re.search(p, clean_ln, re.I) for p in ignore_patterns):
+            continue
+            
+        if clean_ln not in seen:
+            out.append(clean_ln)
+            seen.add(clean_ln)
+        
         if len(out) >= k:
             break
 
-    # unique preserve order
-    seen, uniq = set(), []
-    for x in out:
-        if x not in seen:
-            uniq.append(x)
-            seen.add(x)
-    return uniq[:k]
-
+    return out
 
 def generate_recommendations(
     prompts: List[str],
@@ -97,6 +111,7 @@ def generate_recommendations(
 
     for i in range(0, len(prompts), Config.BATCH_SIZE):
         batch = [p for p in prompts[i : i + Config.BATCH_SIZE] if p is not None]
+
         if not batch:
             continue
 
@@ -121,7 +136,11 @@ def generate_recommendations(
 
         decoded = tokenizer.batch_decode(outputs, skip_special_tokens=True)
         for txt in decoded:
-            recs = parse_ranked_list(txt, Config.TOP_K_RECS)
+            # extract generated part
+            gen_part = txt.split("assistant")[-1].strip()
+            print(gen_part)
+            recs = parse_ranked_list(gen_part, Config.TOP_K_RECS)
+            print(recs)
             all_recs.append(recs)
 
     # if any prompts were None, keep alignment by returning empty lists for them

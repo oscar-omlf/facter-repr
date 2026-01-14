@@ -7,39 +7,34 @@ main.py (updated): Paper-aligned FACTER pipeline with:
 - CFR via counterfactual attribute flips (neutral system prompt)
 - Zero-shot baseline (open-ended) with same mapping and metrics
 """
-
 from __future__ import annotations
 
 import json
-
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
-from facter.baseline_zero_shot import NEUTRAL_SYSTEM_PROMPT, run_zero_shot_openended
-from facter.catalog_map import CatalogMapper
 from facter.config import Config
 from facter.data import DatasetLoader
-from facter.fairness import ConformalFairnessValidator, _group_key
-from facter.metrics_fairness import compute_cfr, compute_snsr_snsv
 from facter.models import load_models
+from facter.fairness import ConformalFairnessValidator, _group_key
 from facter.prompt_engine import FairPromptEngine
-from facter.utils import (
-    evaluate_at_k_from_lists,
-    evaluate_valid_at_k,
-    generate_recommendations,
-    setup_logging,
-)
+from facter.utils import setup_logging, generate_recommendations, evaluate_at_k_from_lists, evaluate_valid_at_k
+
+from facter.catalog_map import CatalogMapper
+from facter.metrics_fairness import compute_snsr_snsv, compute_cfr
+from facter.baseline_zero_shot import run_zero_shot_openended, NEUTRAL_SYSTEM_PROMPT
 
 
 def main():
     logger = setup_logging()
     np.random.seed(Config.RANDOM_SEED)
-
+    print("\n=== PHASE 0: Loading Models ===")
     embedder, tokenizer, model = load_models(prefer_public_finetuned_embedder=True)
+    print("✓ Models loaded successfully")
 
     results = {}
-    for dataset_name in ["amazon", "ml-1m"]:
+    for dataset_name in ["ml-1m"]:
         logger.info(f"\n=== Running {dataset_name.upper()} ===")
         loader = DatasetLoader(dataset_name)
         df = loader.prepare_prompts().dropna().reset_index(drop=True)
@@ -55,17 +50,27 @@ def main():
             stratify=df[Config.PROTECTED_ATTRIBUTES].astype(str).agg("_".join, axis=1),
         )
 
+        # Quick run for testing
+        train_df = train_df.iloc[:8]
+        test_df = test_df.iloc[:8]
+        print(f"\n=== PHASE 1: Data Loading & Splitting ===")
+        print(f"Train size: {len(train_df)}, Test size: {len(test_df)}")
+        print(f"Protected attributes: {Config.PROTECTED_ATTRIBUTES}")
+
         # Build catalog mapper
         mapper = CatalogMapper(embedder, loader.item_db)
         mapper.build(dedup=True)
+        print(f"✓ Catalog mapper built (|item_db|={len(loader.item_db)})")
 
         # -------------------------
         # Offline calibration (FASTER: use rank-1 from open-ended)
         # -------------------------
+        print(f"\n=== PHASE 2: Offline Calibration ===")
         logger.info("Calibration generation (open-ended Top-K)...")
-        cal_recs = generate_recommendations(
-            train_df["prompt"].tolist(), system_msg="", tokenizer=tokenizer, model=model
-        )
+        cal_recs = generate_recommendations(train_df["prompt"].tolist(), system_msg="", tokenizer=tokenizer, model=model)
+        print(f"✓ Generated {len(cal_recs)} calibration recommendations")
+        print(f"Example cal recs[0]: {cal_recs[0]}")
+        print(f"Target title[0]: {train_df['target_title'].iloc[0]}")
 
         cal_groups = [
             _group_key({k: str(row[k]) for k in Config.PROTECTED_ATTRIBUTES})
@@ -80,6 +85,7 @@ def main():
             cal_recs=cal_recs,
             cal_targets=train_df["target_title"].tolist(),
         )
+        print(f"✓ Calibration complete. Q_alpha_0 = {validator.adaptive_threshold:.4f}")
 
         prompt_engine = FairPromptEngine(validator)
 
@@ -90,7 +96,9 @@ def main():
         # -------------------------
         # Zero-shot baseline (task-matched open-ended)
         # -------------------------
+        print(f"\n=== PHASE 3: Zero-Shot Baseline ===")
         zs_raw = run_zero_shot_openended(test_df, tokenizer, model)
+        print(f"✓ Generated {len(zs_raw)} zero-shot recommendations")
         zs_map = []
         zs_valid = []
         for recs in zs_raw:
@@ -98,16 +106,9 @@ def main():
             zs_map.append(mr.mapped_titles)
             zs_valid.append(mr.valid_at_k)
 
-        zs_acc = evaluate_at_k_from_lists(
-            zs_map, test_df["target_title"].tolist(), k=Config.TOP_K_RECS
-        )
+        zs_acc = evaluate_at_k_from_lists(zs_map, test_df["target_title"].tolist(), k=Config.TOP_K_RECS)
         zs_validm = evaluate_valid_at_k(zs_valid, k=Config.TOP_K_RECS)
-        zs_sns = compute_snsr_snsv(
-            test_df.assign(mapped_recs=zs_map),
-            embedder,
-            recs_col="mapped_recs",
-            group_mode="tuple",
-        )
+        zs_sns = compute_snsr_snsv(test_df.assign(mapped_recs=zs_map), embedder, recs_col="mapped_recs", group_mode="tuple")
         zs_cfr = compute_cfr(
             test_df,
             embedder,
@@ -130,12 +131,15 @@ def main():
                 "CFR_n_pairs": zs_cfr.n_pairs,
             }
         }
+        print(f"✓ Baseline metrics computed: HitRate@10={zs_acc.get('HitRate@10', 'N/A'):.4f}, NDCG@10={zs_acc.get('NDCG@10', 'N/A'):.4f}, SNSR={zs_sns.SNSR:.4f}, SNSV={zs_sns.SNSV:.4f}, CFR={zs_cfr.CFR:.4f}")
 
         # -------------------------
         # FACTER iterations
         # -------------------------
+        print(f"\n=== PHASE 4: Online Monitor (FACTER iterations) ===")
         history = []
         for it in range(Config.MAX_ITERATIONS):
+            print(f"\n--- Iteration {it+1}/{Config.MAX_ITERATIONS} ---")
             prompt_engine.set_iteration(it)
 
             facter_raw = []
@@ -150,13 +154,9 @@ def main():
                 g = _group_key(attrs)
 
                 system_msg = prompt_engine.generate_system_prompt(current_group=g)
-                user_prompt = prompt_engine.update_prompt(
-                    row["prompt"], current_group=g
-                )
+                user_prompt = prompt_engine.update_prompt(row["prompt"], current_group=g)
 
-                recs = generate_recommendations(
-                    [user_prompt], system_msg, tokenizer, model
-                )[0]
+                recs = generate_recommendations([user_prompt], system_msg, tokenizer, model)[0]
                 # map
                 mr = mapper.map_list(recs, k=Config.TOP_K_RECS, min_sim=0.65)
                 mapped = mr.mapped_titles
@@ -165,7 +165,7 @@ def main():
                     context=row["context"],
                     prompt=row["prompt"],
                     attrs=attrs,
-                    recs=mapped,  # IMPORTANT: run validator on mapped titles
+                    recs=mapped,             # IMPORTANT: run validator on mapped titles
                     y_true_title=row["target_title"],
                 )
 
@@ -184,18 +184,14 @@ def main():
             eval_df["Q"] = thresholds
 
             viol_rate = float(np.mean(is_viol)) if is_viol else 0.0
-            acc = evaluate_at_k_from_lists(
-                facter_mapped, eval_df["target_title"].tolist(), k=Config.TOP_K_RECS
-            )
+            acc = evaluate_at_k_from_lists(facter_mapped, eval_df["target_title"].tolist(), k=Config.TOP_K_RECS)
             validm = evaluate_valid_at_k(facter_valid, k=Config.TOP_K_RECS)
 
-            sns = compute_snsr_snsv(
-                eval_df, embedder, recs_col="mapped_recs", group_mode="tuple"
-            )
+            sns = compute_snsr_snsv(eval_df, embedder, recs_col="mapped_recs", group_mode="tuple")
             # CFR (neutral) can be computed once per dataset; optional to compute per-iteration.
             # Here we compute once in iteration 0 for speed; set to None otherwise.
             cfr = None
-            if it == 0:
+            if it == Config.MAX_ITERATIONS - 1:
                 cfr = compute_cfr(
                     eval_df,
                     embedder,
@@ -217,15 +213,15 @@ def main():
                 "Q_last": float(eval_df["Q"].iloc[-1]),
             }
             if cfr is not None:
-                record.update(
-                    {
-                        "CFR": cfr.CFR,
-                        "CFR_valid_rate": cfr.valid_rate,
-                        "CFR_n_pairs": cfr.n_pairs,
-                    }
-                )
+                record.update({"CFR": cfr.CFR, "CFR_valid_rate": cfr.valid_rate, "CFR_n_pairs": cfr.n_pairs})
 
-            logger.info(f"Iter {it + 1}: {json.dumps(record, indent=2)}")
+            logger.info(f"Iter {it+1}: {json.dumps(record, indent=2)}")
+            print(f"✓ Iter {it+1} complete:")
+            print(f"  - Violations: {int(np.sum(is_viol))}/{len(is_viol)} (rate: {viol_rate:.3f})")
+            print(f"  - Recall@10: {acc.get('HitRate@10', 0):.4f}, Valid@10: {validm.get('Valid@10', 0):.4f}")
+            print(f"  - SNSR: {sns.SNSR:.4f}, SNSV: {sns.SNSV:.4f}")
+            print(f"  - CFR: {cfr.CFR:.4f}" if cfr is not None else "  - CFR: N/A")
+            print(f"  - Q_final: {float(eval_df['Q'].iloc[-1]):.4f}")
             history.append(record)
 
             if it >= 2 and viol_rate < 0.10:
@@ -234,11 +230,24 @@ def main():
         results[dataset_name] = {
             "baseline": baseline_block,
             "history": history,
-            "Q_alpha_init": float(validator.adaptive_threshold)
-            if validator.adaptive_threshold is not None
-            else None,
+            "Q_alpha_init": float(validator.adaptive_threshold) if validator.adaptive_threshold is not None else None,
         }
 
+    print(f"\n=== PHASE 5: Summary ===")
+    print(f"✓ Pipeline complete for {dataset_name}")
+    print(f"  - Baseline Recall@10: {baseline_block['ZeroShot_OpenEnded'].get('Recall@10', 'N/A')}")
+    print(f"  - Iterations completed: {len(history)}")
+    if history:
+        final_viol = history[-1].get('violation_rate', 'N/A')
+        final_recall = history[-1].get('Recall@10', 'N/A')
+        final_snsr = history[-1].get('SNSR', 'N/A')
+        final_snsv = history[-1].get('SNSV', 'N/A')
+        final_cfr = history[-1].get('CFR', 'N/A')
+        print(f"  - Final violation rate: {final_viol}")
+        print(f"  - Final Recall@10: {final_recall}")
+        print(f"  - Final SNSR: {final_snsr}")
+        print(f"  - Final SNSV: {final_snsv}")
+        print(f"  - Final CFR: {final_cfr}")
     logger.info("\n=== FINAL RESULTS ===\n" + json.dumps(results, indent=2))
     return results
 

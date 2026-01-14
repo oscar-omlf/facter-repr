@@ -1,7 +1,6 @@
 """
 config.py: Centralized configuration and hyperparameters for FACTER (paper-aligned).
 """
-
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +43,7 @@ class Config:
     TEMPERATURE: float = 0.7
     TOP_P: float = 0.95
     REPETITION_PENALTY: float = 1.2
+    MAX_ITERATIONS: int = 3  # for FACTER online phase
 
     # History construction (paper-aligned: open-vocab “next item”)
     HISTORY_SIZE: int = 10
@@ -71,3 +71,4 @@ class Config:
 
     # Reproducibility
     RANDOM_SEED: int = 42
+    device = "cpu"
