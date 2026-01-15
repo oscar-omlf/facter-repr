@@ -3,22 +3,22 @@ utils.py: Generation, parsing, and metrics for FACTER (paper-aligned).
 - Generates Top-K ranked lists (open-vocabulary) and parses JSON arrays.
 - Computes HitRate@K and NDCG@K for next-item prediction.
 """
+
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
-import re
-import json
 import pickle
-import hashlib
-from pathlib import Path
+import re
 from difflib import SequenceMatcher
-from typing import List, Optional, Tuple, Dict
+from pathlib import Path
+from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
 
-from .config import Config
+from facter.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +46,18 @@ def setup_logging():
 # Prompt formatting (chat template if available)
 # -------------------------
 def _format_chat(tokenizer, system_msg: str, user_msg: str) -> torch.Tensor:
-    messages = [{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}]
+    messages = [
+        {"role": "system", "content": system_msg},
+        {"role": "user", "content": user_msg},
+    ]
     if hasattr(tokenizer, "apply_chat_template"):
-        return tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, return_tensors="pt")
+        return tokenizer.apply_chat_template(
+            messages, tokenize=True, add_generation_prompt=True, return_tensors="pt"
+        )
     # fallback
-    text = f"<system>\n{system_msg}\n</system>\n<user>\n{user_msg}\n</user>\n<assistant>\n"
+    text = (
+        f"<system>\n{system_msg}\n</system>\n<user>\n{user_msg}\n</user>\n<assistant>\n"
+    )
     return tokenizer(text, return_tensors="pt").input_ids
 
 
@@ -65,7 +72,9 @@ def parse_ranked_list(text: str, k: int) -> List[str]:
 
     # 1. Pre-process to handle common LLM "JSON-ish" errors
     # Replace smart quotes with standard quotes
-    sanitized_text = text.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
+    sanitized_text = (
+        text.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+    )
 
     # 2. Try JSON array extraction
     m = re.search(r"\[[\s\S]*\]", sanitized_text)
@@ -96,31 +105,38 @@ def parse_ranked_list(text: str, k: int) -> List[str]:
     logger.info(f"[parse_ranked_list] Fallback parse from {len(lines)} lines")
     out = []
     seen = set()
-    
+
     # Common conversational prefixes to ignore
-    ignore_patterns = [r"based on", r"here is", r"here're", r"recommended", r"note that"]
+    ignore_patterns = [
+        r"based on",
+        r"here is",
+        r"here're",
+        r"recommended",
+        r"note that",
+    ]
 
     for ln in lines:
         # Clean bullets/numbers
         clean_ln = re.sub(r"^\s*[\-\*\d\.\)\:\[\]]+\s*", "", ln).strip()
         # Remove wrapping quotes if they exist
         clean_ln = clean_ln.strip('"').strip("'")
-        
+
         # Skip if line is empty, too long (likely a sentence), or matches ignore list
         if not clean_ln or len(clean_ln) > 100:
             continue
         if any(re.search(p, clean_ln, re.I) for p in ignore_patterns):
             continue
-            
+
         if clean_ln not in seen:
             out.append(clean_ln)
             seen.add(clean_ln)
-        
+
         if len(out) >= k:
             break
 
     logger.info(f"[parse_ranked_list] Final output: {out}")
     return out
+
 
 def generate_recommendations(
     prompts: List[str],
@@ -129,22 +145,25 @@ def generate_recommendations(
     model,
 ) -> List[List[str]]:
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    
+
     # Setup cache directory
     cache_dir = Path("./data/cache/recommendations")
     cache_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Create cache key based on prompts and config
-    cache_key_str = json.dumps({
-        "prompts": prompts,
-        "system_msg": system_msg,
-        "max_tokens": Config.MAX_NEW_TOKENS,
-        "temperature": Config.TEMPERATURE,
-        "top_p": Config.TOP_P,
-    }, sort_keys=True)
+    cache_key_str = json.dumps(
+        {
+            "prompts": prompts,
+            "system_msg": system_msg,
+            "max_tokens": Config.MAX_NEW_TOKENS,
+            "temperature": Config.TEMPERATURE,
+            "top_p": Config.TOP_P,
+        },
+        sort_keys=True,
+    )
     cache_key = hashlib.sha256(cache_key_str.encode()).hexdigest()
     cache_file = cache_dir / f"{cache_key}.pkl"
-    
+
     # Try to load from cache
     if cache_file.exists():
         logger.info(f"[generate_recommendations] Loading from cache: {cache_file.name}")
@@ -153,7 +172,7 @@ def generate_recommendations(
                 return pickle.load(f)
         except Exception as e:
             logger.info(f"[generate_recommendations] Cache load failed: {e}")
-    
+
     all_recs: List[List[str]] = []
 
     for i in range(0, len(prompts), Config.BATCH_SIZE):
@@ -166,7 +185,9 @@ def generate_recommendations(
         input_ids_list = [_format_chat(tokenizer, system_msg, p) for p in batch]
         # pad manually
         max_len = max(x.shape[-1] for x in input_ids_list)
-        input_ids = torch.full((len(input_ids_list), max_len), tokenizer.pad_token_id, dtype=torch.long)
+        input_ids = torch.full(
+            (len(input_ids_list), max_len), tokenizer.pad_token_id, dtype=torch.long
+        )
         for j, x in enumerate(input_ids_list):
             input_ids[j, -x.shape[-1] :] = x[0]
         input_ids = input_ids.to(device)
@@ -196,7 +217,7 @@ def generate_recommendations(
         while len(all_recs) < len(prompts):
             all_recs.append([])
         all_recs = all_recs[: len(prompts)]
-    
+
     # Save to cache
     try:
         with open(cache_file, "wb") as f:
@@ -204,7 +225,7 @@ def generate_recommendations(
         logger.info(f"[generate_recommendations] Saved to cache: {cache_file.name}")
     except Exception as e:
         logger.info(f"[generate_recommendations] Cache save failed: {e}")
-    
+
     return all_recs
 
 
@@ -235,8 +256,11 @@ def evaluate_at_k(df, k: int = 10) -> dict:
         f"NDCG@{k}": float(np.mean(ndcgs)) if ndcgs else 0.0,
     }
 
+
 def _best_fuzzy_match(a: str, b: str) -> float:
-    return SequenceMatcher(None, (a or "").lower().strip(), (b or "").lower().strip()).ratio()
+    return SequenceMatcher(
+        None, (a or "").lower().strip(), (b or "").lower().strip()
+    ).ratio()
 
 
 def hitrate_ndcg_at_k(preds: List[str], gold: str, k: int) -> Tuple[float, float]:
@@ -244,7 +268,9 @@ def hitrate_ndcg_at_k(preds: List[str], gold: str, k: int) -> Tuple[float, float
         logger.info(f"[hitrate_ndcg_at_k] Empty preds, gold={gold}")
         return 0.0, 0.0
     gold = (gold or "").strip()
-    logger.info(f"[hitrate_ndcg_at_k] Comparing {len(preds)} preds against gold='{gold}'")
+    logger.info(
+        f"[hitrate_ndcg_at_k] Comparing {len(preds)} preds against gold='{gold}'"
+    )
     for rank, p in enumerate(preds[:k], start=1):
         score = _best_fuzzy_match(p, gold) if p else 0.0
         logger.info(f"  Rank {rank}: pred='{p}' -> score={score:.2f}")

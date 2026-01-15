@@ -5,6 +5,7 @@ Implements:
 - Cross-group neighborhoods for Δ (ai != aj)
 - Online threshold update with exponential decay (paper Eq. 11)
 """
+
 from __future__ import annotations
 
 import logging
@@ -15,13 +16,13 @@ import numpy as np
 import torch
 from sentence_transformers import util
 
-from .config import Config
+from facter.config import Config
 
 logger = logging.getLogger(__name__)
 
 
 def _group_key(attrs: Dict[str, str]) -> str:
-    return "|".join([f"{k}={attrs.get(k,'')}" for k in Config.PROTECTED_ATTRIBUTES])
+    return "|".join([f"{k}={attrs.get(k, '')}" for k in Config.PROTECTED_ATTRIBUTES])
 
 
 def _cos_dist(a: torch.Tensor, b: torch.Tensor) -> float:
@@ -91,7 +92,11 @@ class ConformalFairnessValidator:
                 g = title_to_genre[tl].split("|")[0]
                 feats.append(f"genre:{g}")
             else:
-                toks = [w for w in tl.replace(":", " ").replace("-", " ").split() if len(w) >= 4]
+                toks = [
+                    w
+                    for w in tl.replace(":", " ").replace("-", " ").split()
+                    if len(w) >= 4
+                ]
                 feats.extend([f"kw:{w}" for w in toks[:2]])
         # de-duplicate
         return list(dict.fromkeys(feats))[:10]
@@ -99,13 +104,17 @@ class ConformalFairnessValidator:
     # -------------------------
     # Scoring: S = d + λΔ
     # -------------------------
-    def _neighbors_cross_group(self, context_embed: torch.Tensor, group: str) -> List[int]:
+    def _neighbors_cross_group(
+        self, context_embed: torch.Tensor, group: str
+    ) -> List[int]:
         """
         Find cross-group neighbors among calibration set by context similarity,
         then filter to ai != aj and similarity >= τ.
         """
         assert self.cal_context_embeds is not None
-        sims = util.cos_sim(context_embed.unsqueeze(0), self.cal_context_embeds).squeeze(0)
+        sims = util.cos_sim(
+            context_embed.unsqueeze(0), self.cal_context_embeds
+        ).squeeze(0)
 
         # topK candidates then filter
         k = min(Config.N_REFERENCE * 3, sims.shape[0])
@@ -136,13 +145,19 @@ class ConformalFairnessValidator:
         """
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        ctx_e = self.embedder.encode(context, convert_to_tensor=True, show_progress_bar=False).to(device)
-        yhat_e = self.embedder.encode(y_hat_title, convert_to_tensor=True, show_progress_bar=False).to(device)
+        ctx_e = self.embedder.encode(
+            context, convert_to_tensor=True, show_progress_bar=False
+        ).to(device)
+        yhat_e = self.embedder.encode(
+            y_hat_title, convert_to_tensor=True, show_progress_bar=False
+        ).to(device)
 
         # d term
         d = 0.0
         if y_true_title is not None and str(y_true_title).strip():
-            ytrue_e = self.embedder.encode(str(y_true_title), convert_to_tensor=True, show_progress_bar=False).to(device)
+            ytrue_e = self.embedder.encode(
+                str(y_true_title), convert_to_tensor=True, show_progress_bar=False
+            ).to(device)
             d = _cos_dist(yhat_e, ytrue_e)
 
         # Δ term
@@ -190,7 +205,13 @@ class ConformalFairnessValidator:
           - y_hat (rank-1 title) for Δ
         Then compute S_i and set Q_alpha.
         """
-        assert len(cal_contexts) == len(cal_prompts) == len(cal_groups) == len(cal_recs) == len(cal_targets)
+        assert (
+            len(cal_contexts)
+            == len(cal_prompts)
+            == len(cal_groups)
+            == len(cal_recs)
+            == len(cal_targets)
+        )
 
         self.cal_contexts = cal_contexts
         self.cal_prompts = cal_prompts
@@ -203,7 +224,9 @@ class ConformalFairnessValidator:
         ).to(device)
 
         # rank-1 rec for calibration
-        yhat_titles = [r[0] if (isinstance(r, list) and len(r) > 0) else "" for r in cal_recs]
+        yhat_titles = [
+            r[0] if (isinstance(r, list) and len(r) > 0) else "" for r in cal_recs
+        ]
         logger.info("Embedding calibration rank-1 recommendations...")
         self.cal_yhat_embeds = self.embedder.encode(
             yhat_titles, convert_to_tensor=True, show_progress_bar=True
@@ -221,7 +244,9 @@ class ConformalFairnessValidator:
             scores.append(s_i)
 
         self.adaptive_threshold = self._conformal_quantile(scores, Config.ALPHA)
-        logger.info(f"Calibration complete: Q_alpha={self.adaptive_threshold:.4f} (n={len(scores)})")
+        logger.info(
+            f"Calibration complete: Q_alpha={self.adaptive_threshold:.4f} (n={len(scores)})"
+        )
 
     # -------------------------
     # Online update + validation
@@ -234,7 +259,8 @@ class ConformalFairnessValidator:
             self.adaptive_threshold = s_new
             return
         self.adaptive_threshold = float(
-            Config.QUANTILE_DECAY * self.adaptive_threshold + (1.0 - Config.QUANTILE_DECAY) * s_new
+            Config.QUANTILE_DECAY * self.adaptive_threshold
+            + (1.0 - Config.QUANTILE_DECAY) * s_new
         )
 
     def validate(
@@ -254,13 +280,26 @@ class ConformalFairnessValidator:
 
         group = _group_key(attrs)
         yhat_title = recs[0] if recs else ""
-        s_new = self._score_S(context=context, group=group, y_hat_title=yhat_title, y_true_title=y_true_title)
+        s_new = self._score_S(
+            context=context,
+            group=group,
+            y_hat_title=yhat_title,
+            y_true_title=y_true_title,
+        )
 
         is_violation = bool(s_new > float(self.adaptive_threshold))
         if is_violation:
             self.violation_count += 1
             feats = self._extract_features(recs)
-            self._store_violation(context, prompt, recs, group, s_new, float(self.adaptive_threshold), feats)
+            self._store_violation(
+                context,
+                prompt,
+                recs,
+                group,
+                s_new,
+                float(self.adaptive_threshold),
+                feats,
+            )
             self._update_threshold_on_violation(s_new)
 
         return is_violation, float(s_new), float(self.adaptive_threshold)

@@ -4,25 +4,23 @@ data.py: Dataset loading, preprocessing, and prompt construction for FACTER (pap
 - Context-only strings are also produced for cross-group neighborhood building (W / neighbor search).
 - Open-vocabulary generation.
 """
+
 from __future__ import annotations
 
 import gzip
 import json
 import logging
-import random
-import shutil
 import zipfile
 from dataclasses import dataclass
 from io import BytesIO
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 import requests
 from tqdm import tqdm
 
-from .config import Config
+from facter.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -38,29 +36,28 @@ _MOVIELENS_AGE_MAP = {
 }
 
 _OCCUPTION_MAP = {
-            0: "not specified",
-            1: "academic/educator",
-            2: "artist",
-            3: "clerical/admin",
-            4: "college/grad student",
-            5: "customer service",
-            6: "doctor/health care",
-            7: "executive/managerial",
-            8: "farmer",
-            9: "homemaker",
-            10: "K-12 student",
-            11: "lawyer",
-            12: "programmer",
-            13: "retired",
-            14: "sales/marketing",
-            15: "scientist",
-            16: "self-employed",
-            17: "technician/engineer",
-            18: "tradesman/craftsman",
-            19: "unemployed",
-            20: "writer",
-        }
-
+    0: "not specified",
+    1: "academic/educator",
+    2: "artist",
+    3: "clerical/admin",
+    4: "college/grad student",
+    5: "customer service",
+    6: "doctor/health care",
+    7: "executive/managerial",
+    8: "farmer",
+    9: "homemaker",
+    10: "K-12 student",
+    11: "lawyer",
+    12: "programmer",
+    13: "retired",
+    14: "sales/marketing",
+    15: "scientist",
+    16: "self-employed",
+    17: "technician/engineer",
+    18: "tradesman/craftsman",
+    19: "unemployed",
+    20: "writer",
+}
 
 
 @dataclass
@@ -128,8 +125,12 @@ class DatasetLoader:
             names=["mid", "title", "genre"],
             encoding="latin-1",
         )
-        users["age"] = users["age"].map(_MOVIELENS_AGE_MAP).fillna(users["age"].astype(str))
-        users["occupation"] = users["occupation"].map(_OCCUPTION_MAP).fillna("not specified")
+        users["age"] = (
+            users["age"].map(_MOVIELENS_AGE_MAP).fillna(users["age"].astype(str))
+        )
+        users["occupation"] = (
+            users["occupation"].map(_OCCUPTION_MAP).fillna("not specified")
+        )
         self.data = ratings.merge(users, on="uid").sort_values(["uid", "timestamp"])
         # item_db: mid -> {title, genre}
         movies["mid"] = movies["mid"].astype(str)
@@ -143,24 +144,63 @@ class DatasetLoader:
         if gz_path.exists():
             return
         logger.info("Downloading Amazon Movies&TV dataset...")
-        resp = requests.get(Config.DATASETS["amazon"]["url"], stream=True, timeout=120, verify=False)
+        resp = requests.get(
+            Config.DATASETS["amazon"]["url"], stream=True, timeout=120, verify=False
+        )
         resp.raise_for_status()
         with open(gz_path, "wb") as f:
-            for chunk in tqdm(resp.iter_content(chunk_size=8192), desc="Downloading", unit="KB"):
+            for chunk in tqdm(
+                resp.iter_content(chunk_size=8192), desc="Downloading", unit="KB"
+            ):
+                if chunk:
+                    f.write(chunk)
+
+    def _download_amazon_meta(self) -> None:
+        gz_path = Config.EXTRACT_DIR / "meta_Movies_and_TV_5.json.gz"
+        if gz_path.exists():
+            return
+
+        logger.info("Downloading Metadata for Amazon Movies&TV dataset...")
+        resp = requests.get(
+            Config.DATASETS["amazon"]["meta_url"],
+            stream=True,
+            timeout=120,
+            verify=False,
+        )
+        resp.raise_for_status()
+
+        with open(gz_path, "wb") as f:
+            for chunk in tqdm(
+                resp.iter_content(chunk_size=8192), desc="Downloading", unit="KB"
+            ):
                 if chunk:
                     f.write(chunk)
 
     def _load_amazon(self) -> None:
         self._download_amazon()
+        self._download_amazon_meta()
+
         gz_path = Config.EXTRACT_DIR / "Movies_and_TV_5.json.gz"
         records = []
         with gzip.open(gz_path, "rt", encoding="utf-8") as f:
             for line in tqdm(f, desc="Loading Amazon data"):
                 records.append(json.loads(line))
-        df = pd.DataFrame(records)
+        df_main = pd.DataFrame(records)
+
+        # Load the metadata dataset
+        gz_path_meta = Config.EXTRACT_DIR / "meta_Movies_and_TV_5.json.gz"
+        records_meta = []
+        with gzip.open(gz_path_meta, "rt", encoding="utf-8") as f:
+            for line in tqdm(f, desc="Loading Amazon metadata"):
+                records_meta.append(json.loads(line))
+
+        df_meta = pd.DataFrame(records_meta)
+        df_meta = df_meta[["asin", "title"]].drop_duplicates()
 
         # Basic preprocessing: keep positive interactions
-        df = df[df["overall"] >= 4].copy()
+        df_main = df_main[df_main["overall"] >= 4].copy()
+        df = pd.merge(df_main, df_meta, on="asin", how="inner")
+
         df = df.rename(
             columns={
                 "reviewerID": "uid",
@@ -168,7 +208,7 @@ class DatasetLoader:
                 "reviewText": "text",
                 "overall": "rating",
                 "unixReviewTime": "timestamp",
-                "summary": "title",
+                # "summary": "title",
             }
         )
         df["mid"] = df["mid"].astype(str)
@@ -179,8 +219,11 @@ class DatasetLoader:
         rng = np.random.default_rng(Config.RANDOM_SEED)
         df["gender"] = rng.choice(["M", "F"], size=len(df))
         df["age"] = rng.integers(18, 65, size=len(df)).astype(int)
-        df["age"] = pd.cut(df["age"], bins=[17, 24, 34, 44, 54, 64, 200],
-                           labels=["18-24", "25-34", "35-44", "45-54", "55-64", "65+"]).astype(str)
+        df["age"] = pd.cut(
+            df["age"],
+            bins=[17, 24, 34, 44, 54, 64, 200],
+            labels=["18-24", "25-34", "35-44", "45-54", "55-64", "65+"],
+        ).astype(str)
         df["occupation"] = rng.integers(0, 20, size=len(df)).astype(str)
         df["occupation"] = df["occupation"].map(_OCCUPTION_MAP).fillna("not specified")
 
@@ -205,10 +248,12 @@ class DatasetLoader:
         return out
 
     def _make_context_text(self, history_titles: List[str]) -> str:
-        lines = [f"{i+1}. {t}" for i, t in enumerate(history_titles)]
+        lines = [f"{i + 1}. {t}" for i, t in enumerate(history_titles)]
         return "Watch history:\n" + "\n".join(lines)
 
-    def _make_audit_prompt(self, context: str, gender: str, age: str, occupation: str) -> str:
+    def _make_audit_prompt(
+        self, context: str, gender: str, age: str, occupation: str
+    ) -> str:
         # Protected attributes appear in the query z=(x,a) (audit condition), as described in the paper.
         # We label it explicitly as "audit only" to discourage downstream misuse.
         audit = (
@@ -240,7 +285,9 @@ class DatasetLoader:
         df["mid"] = df["mid"].astype(str)
 
         rows: List[PromptRow] = []
-        for uid, grp in tqdm(df.groupby("uid"), desc=f"Building sequences ({self.dataset_name})"):
+        for uid, grp in tqdm(
+            df.groupby("uid"), desc=f"Building sequences ({self.dataset_name})"
+        ):
             grp = grp.sort_values("timestamp")
             mids = grp["mid"].tolist()
             if len(mids) < max(Config.MIN_SEQ_LENGTH, Config.HISTORY_SIZE + 1):
@@ -255,7 +302,9 @@ class DatasetLoader:
                 hist_mids = mids[idx - Config.HISTORY_SIZE : idx]
                 target_mid = mids[idx]
                 hist_titles = self._titles_from_mids(hist_mids)
-                target_title = self.item_db.get(str(target_mid), {}).get("title", "Unknown Title")
+                target_title = self.item_db.get(str(target_mid), {}).get(
+                    "title", "Unknown Title"
+                )
 
                 context = self._make_context_text(hist_titles)
                 prompt = self._make_audit_prompt(context, g_last, a_last, o_last)

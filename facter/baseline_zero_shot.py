@@ -13,16 +13,16 @@ We provide two variants:
    - Given a candidate set (retrieved externally), ask LLM to rank candidates.
    - This is a different task; use only if you explicitly want candidate-ranking comparisons.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional
+from typing import List, Optional
 
 import pandas as pd
 
-from .config import Config
-from .utils import generate_recommendations, parse_ranked_list
-
+from facter.config import Config
+from facter.utils import generate_recommendations
 
 NEUTRAL_SYSTEM_PROMPT = (
     "You are a helpful recommendation assistant.\n"
@@ -33,7 +33,7 @@ NEUTRAL_SYSTEM_PROMPT = (
 
 @dataclass
 class ZeroShotResult:
-    recs: List[List[str]]              # open-ended raw recs
+    recs: List[List[str]]  # open-ended raw recs
     mapped_recs: Optional[List[List[str]]] = None
     valid_at_k: Optional[List[float]] = None
 
@@ -68,7 +68,7 @@ def run_zero_shot_candidate_ranker(
         ctx = str(row.get(context_col, ""))
         cands = row.get(candidate_col, [])
         cands = cands if isinstance(cands, list) else []
-        cand_block = "\n".join([f"{i+1}. {c}" for i, c in enumerate(cands)])
+        cand_block = "\n".join([f"{i + 1}. {c}" for i, c in enumerate(cands)])
         p = (
             ctx
             + "\n\nCandidates:\n"

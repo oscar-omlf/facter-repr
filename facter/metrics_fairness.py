@@ -11,20 +11,21 @@ Implements:
 
 These are black-box computable proxies (no internal weights/activations required).
 """
+
 from __future__ import annotations
 
 import logging
 import random
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 import torch
 from sentence_transformers import util
 
-from .catalog_map import rewrite_prompt_attrs
-from .config import Config
+from facter.catalog_map import rewrite_prompt_attrs
+from facter.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -69,8 +70,8 @@ class SNSMetrics:
 def compute_snsr_snsv(
     df: pd.DataFrame,
     embedder,
-    recs_col: str = "mapped_recs",   # list[str]
-    group_mode: str = "tuple",       # "tuple" or a single attribute name like "gender"
+    recs_col: str = "mapped_recs",  # list[str]
+    group_mode: str = "tuple",  # "tuple" or a single attribute name like "gender"
     min_group_size: int = 30,
 ) -> SNSMetrics:
     """
@@ -80,8 +81,10 @@ def compute_snsr_snsv(
       - "tuple": group by the full protected attribute tuple (default).
       - "<attr>": group by one protected attribute (e.g., "gender") to control one at a time.
     """
-    logger.info(f"[compute_snsr_snsv] Input: df.shape={df.shape if df is not None else None}, recs_col={recs_col}, group_mode={group_mode}")
-    
+    logger.info(
+        f"[compute_snsr_snsv] Input: df.shape={df.shape if df is not None else None}, recs_col={recs_col}, group_mode={group_mode}"
+    )
+
     if df is None or df.empty:
         logger.info("[compute_snsr_snsv] Empty dataframe, returning 0.0")
         return SNSMetrics(SNSR=0.0, SNSV=0.0, details={})
@@ -106,19 +109,25 @@ def compute_snsr_snsv(
         pooled = []
         for idx, recs in enumerate(gdf[recs_col].tolist()):
             recs = recs if isinstance(recs, list) else []
-            logger.info(f"      Example {idx}: {len(recs)} recs: {recs[:2]}")  # log first 2
+            logger.info(
+                f"      Example {idx}: {len(recs)} recs: {recs[:2]}"
+            )  # log first 2
             pooled.append(_pool_recs_embedding(embedder, recs))
         G = torch.stack(pooled, dim=0)
         group_vecs[str(gname)] = torch.mean(G, dim=0)
-        logger.info(f"    -> Group embedding computed, shape={group_vecs[str(gname)].shape}")
+        logger.info(
+            f"    -> Group embedding computed, shape={group_vecs[str(gname)].shape}"
+        )
 
     names = list(group_vecs.keys())
     logger.info(f"[compute_snsr_snsv] Groups with sufficient size: {len(names)}")
     logger.info(f"  Group names: {names}")
-    
+
     if len(names) < 2:
         logger.info(f"[compute_snsr_snsv] < 2 groups, returning 0.0")
-        return SNSMetrics(SNSR=0.0, SNSV=0.0, details={"n_groups_used": float(len(names))})
+        return SNSMetrics(
+            SNSR=0.0, SNSV=0.0, details={"n_groups_used": float(len(names))}
+        )
 
     # pairwise distances
     dists = []
@@ -131,7 +140,9 @@ def compute_snsr_snsv(
     SNSR = float(np.max(dists)) if dists else 0.0
     SNSV = float(np.mean(dists)) if dists else 0.0
     logger.info(f"[compute_snsr_snsv] SNSR={SNSR:.4f}, SNSV={SNSV:.4f}")
-    return SNSMetrics(SNSR=SNSR, SNSV=SNSV, details={"n_groups_used": float(len(names))})
+    return SNSMetrics(
+        SNSR=SNSR, SNSV=SNSV, details={"n_groups_used": float(len(names))}
+    )
 
 
 @dataclass
@@ -149,7 +160,7 @@ def compute_cfr(
     *,
     k: int = 10,
     n_samples: int = 200,
-    flip_mode: str = "tuple",   # "tuple" or single attribute name e.g. "gender"
+    flip_mode: str = "tuple",  # "tuple" or single attribute name e.g. "gender"
     attr_value_sampler: Optional[Callable[[str, pd.DataFrame], str]] = None,
     recs_distance: str = "pooled_cos",  # "pooled_cos" or "set_cos"
     prompt_col: str = "prompt",
@@ -181,7 +192,9 @@ def compute_cfr(
 
     sampler = attr_value_sampler or default_sampler
 
-    rows = df.sample(n=min(n_samples, len(df)), replace=False, random_state=Config.RANDOM_SEED)
+    rows = df.sample(
+        n=min(n_samples, len(df)), replace=False, random_state=Config.RANDOM_SEED
+    )
     cfr_vals = []
     valid_pairs = 0
 
@@ -208,7 +221,9 @@ def compute_cfr(
                 continue
         else:
             if flip_mode not in Config.PROTECTED_ATTRIBUTES:
-                raise ValueError(f"flip_mode must be 'tuple' or one of {Config.PROTECTED_ATTRIBUTES}")
+                raise ValueError(
+                    f"flip_mode must be 'tuple' or one of {Config.PROTECTED_ATTRIBUTES}"
+                )
             cf_attrs = dict(base_attrs)
             cf_attrs[flip_mode] = sampler(flip_mode, df)
 

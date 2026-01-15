@@ -3,13 +3,14 @@ prompt_engine.py: Group-aware adversarial prompt engineering for FACTER (paper-a
 - Learns group-specific overrepresented features from violations.
 - Injects: "AVOID: (a) -> feature-only" rules (paper) for the current user's group.
 """
+
 from __future__ import annotations
 
 import logging
 from collections import Counter, defaultdict
 from typing import Dict, List, Optional
 
-from .config import Config
+from facter.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ class FairPromptEngine:
         """
         by_group = defaultdict(list)
         for v in self.validator.violation_memory:
-            for f in (v.features or []):
+            for f in v.features or []:
                 by_group[v.group].append(f)
 
         rules = {}
@@ -49,11 +50,15 @@ class FairPromptEngine:
         ]
 
         if self.validator.adaptive_threshold is not None:
-            base.append(f"Fairness target: keep nonconformity S <= {self.validator.adaptive_threshold:.4f}.")
+            base.append(
+                f"Fairness target: keep nonconformity S <= {self.validator.adaptive_threshold:.4f}."
+            )
 
         rules = self._learn_group_rules()
         if current_group and current_group in rules and rules[current_group]:
-            base.append("Group-specific mitigation rules (triggered by recent violations):")
+            base.append(
+                "Group-specific mitigation rules (triggered by recent violations):"
+            )
             base.extend([f"- {r}" for r in rules[current_group][:5]])
         elif rules:
             # Show a couple global examples without overloading
@@ -63,10 +68,14 @@ class FairPromptEngine:
                 if len(sample) >= 3:
                     break
             if sample:
-                base.append("Examples of learned mitigation rules from recent violations:")
+                base.append(
+                    "Examples of learned mitigation rules from recent violations:"
+                )
                 base.extend([f"- {r}" for r in sample])
 
-        base.append(f"Iteration: {self.iteration+1}/{Config.MAX_NEW_TOKENS if hasattr(Config,'MAX_NEW_TOKENS') else 5}")
+        base.append(
+            f"Iteration: {self.iteration + 1}/{Config.MAX_NEW_TOKENS if hasattr(Config, 'MAX_NEW_TOKENS') else 5}"
+        )
         return "\n".join(base)
 
     def update_prompt(self, prompt: str, current_group: Optional[str] = None) -> str:

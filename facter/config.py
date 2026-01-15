@@ -1,7 +1,9 @@
 """
 config.py: Centralized configuration and hyperparameters for FACTER (paper-aligned).
 """
+
 from __future__ import annotations
+
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +20,7 @@ class Config:
         },
         "amazon": {
             "url": "https://jmcauley.ucsd.edu/data/amazon_v2/categoryFilesSmall/Movies_and_TV_5.json.gz",
+            "meta_url": "https://mcauleylab.ucsd.edu/public_datasets/data/amazon_v2/metaFiles2/meta_Movies_and_TV.json.gz",
             "sample_size": 2500,
         },
     }

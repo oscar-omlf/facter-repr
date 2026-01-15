@@ -5,11 +5,12 @@ models.py: Model and embedder loading utilities for FACTER.
 from __future__ import annotations
 
 import logging
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from sentence_transformers import SentenceTransformer
 
-from .config import Config
+import torch
+from sentence_transformers import SentenceTransformer
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from facter.config import Config
 
 logger = logging.getLogger(__name__)
 
