@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Any
 
 import numpy as np
 import pandas as pd
@@ -9,9 +9,9 @@ from tqdm.auto import tqdm
 from facter.data.prompts import PromptConfig, build_open_prompt
 from facter.models.generator import Generator
 from facter.models.ranker import Ranker
-from facter.fairness.online import OnlineScorer, CalibrationArtifacts, OnlineScoringConfig
+from facter.fairness.online import OnlineScorer, CalibrationArtifacts
 from facter.fairness.threshold_update import update_threshold_theorem2
-from facter.prompting.repair import PromptRepairEngine, PromptRepairConfig
+from facter.prompting.repair import PromptRepairEngine
 from facter.fairness.scoring import item_text
 
 
@@ -38,6 +38,7 @@ class FACTEROnlineMonitor:
       - score each example
       - if violation: add to buffer + inject rules + update threshold (Theorem 2)
     """
+
     def __init__(
         self,
         ranker: Ranker,
@@ -61,6 +62,8 @@ class FACTEROnlineMonitor:
         generator: Optional[Generator] = None,
         prompt_cfg: Optional[PromptConfig] = None,
         title_to_mid: Optional[Dict[str, int]] = None,
+        catalog_mapper: Optional[Any] = None,
+        min_sim: float = 0.65,
     ) -> Tuple[pd.DataFrame, list[OnlineIterationLog]]:
         """
         Online monitoring loop.
@@ -71,10 +74,15 @@ class FACTEROnlineMonitor:
 
         Open-mode:
         - generate top-k titles (JSON list)
-        - map titles->mids for Recall/NDCG if possible
+        - map titles->mids using catalog_mapper (embedding NN + threshold) if provided
+          (fallback: exact title_to_mid dict if provided)
         - score using pred_text (item_text(mapped_mid) if mapped else raw title)
 
-        title_to_mid: prebuilt normalized mapping recommended (see script Patch H).
+        catalog_mapper is expected to expose:
+          map_list(titles: List[str], k: int, min_sim: float) -> object with fields:
+            - mapped_mids: List[Optional[int]]
+            - mapped_titles: List[str]
+            - valid_at_k: float
         """
         q = float(q_alpha0)
         logs: list[OnlineIterationLog] = []
@@ -100,6 +108,9 @@ class FACTEROnlineMonitor:
             generated_titles_list: list[list[str]] = []
             generated_mids_list: list[list[int]] = []
 
+            # Open-mode diagnostics (optional but useful for matching their evaluation regime)
+            valid_at_k_list: list[float] = []
+
             is_viol_list: list[bool] = []
             system_prompts_list: list[str] = []
             model_responses_list: list[str] = []
@@ -120,6 +131,7 @@ class FACTEROnlineMonitor:
                 pred_text: str = ""
 
                 if predict_mode == "rank":
+                    # NOTE: this assumes your Ranker.rank returns (ranked_idx, raw_response).
                     ranked_idx, raw_response = self.ranker.rank(
                         row["prompt_rank"], row["candidate_titles"], system_prompt=system_prompt
                     )
@@ -133,24 +145,59 @@ class FACTEROnlineMonitor:
                     model_responses_list.append(raw_response)
                     generated_titles_list.append([])
                     generated_mids_list.append([])
+                    valid_at_k_list.append(0.0)
 
                     pred_text = item_text(pred_mid, item_db)
 
                 else:
-                    # open generation (one-by-one; correct with your streaming updates)
-                    open_prompt = row["prompt_gen"]
-                    titles = generator.generate_topk([open_prompt], [system_prompt], k=prompt_cfg.k_recs)[0]
+                    # open generation (one-by-one; correct with streaming updates)
+                    open_prompt = row.get("prompt_open", row.get("prompt_gen", None))
+                    if open_prompt is None:
+                        # fall back to building if needed
+                        open_prompt = build_open_prompt(row.to_dict(), prompt_cfg)
+
+                    # Call generator; prefer (prompts, system_prompt, k), fallback to (prompts, [system_prompt], k)
+                    try:
+                        titles = generator.generate_topk([open_prompt], system_prompt, k=prompt_cfg.k_recs)[0]
+                    except TypeError:
+                        titles = generator.generate_topk([open_prompt], [system_prompt], k=prompt_cfg.k_recs)[0]
+
                     generated_titles_list.append(titles)
                     model_responses_list.append(json.dumps(titles, ensure_ascii=False))
 
                     mids: list[int] = []
-                    if title_to_mid is not None:
+                    valid_at_k = 0.0
+
+                    # Preferred: embedding-based catalog mapping (authors' approach)
+                    if catalog_mapper is not None:
+                        map_res = catalog_mapper.map_list(titles, k=prompt_cfg.k_recs, min_sim=min_sim)
+                        # keep valid mapped mids in rank order
+                        mids = [int(m) for m in getattr(map_res, "mapped_mids", []) if m is not None]
+                        valid_at_k = float(getattr(map_res, "valid_at_k", 0.0))
+
+                        # use canonical mapped title for pred_text if available
+                        mapped_titles = getattr(map_res, "mapped_titles", [])
+                        if mapped_titles and mapped_titles[0]:
+                            pred_text = str(mapped_titles[0])
+                        else:
+                            pred_text = titles[0] if titles else "UNKNOWN_GENERATION"
+
+                    # Fallback: exact normalized dict mapping (not paper-aligned, but keeps pipeline usable)
+                    elif title_to_mid is not None:
                         for tt in titles:
                             key = str(tt).strip().lower()
                             mid = title_to_mid.get(key, -1)
-                            if mid != -1 and mid not in mids:
+                            if mid != -1 and int(mid) not in mids:
                                 mids.append(int(mid))
+                        # crude "valid@k" proxy under dict mapping
+                        valid_at_k = float(min(len(mids), prompt_cfg.k_recs)) / float(prompt_cfg.k_recs) if prompt_cfg.k_recs else 0.0
+                        pred_text = item_text(int(mids[0]), item_db) if mids else (titles[0] if titles else "UNKNOWN_GENERATION")
+
+                    else:
+                        pred_text = titles[0] if titles else "UNKNOWN_GENERATION"
+
                     generated_mids_list.append(mids)
+                    valid_at_k_list.append(valid_at_k)
 
                     pred_mid = mids[0] if mids else -1
                     preds.append(int(pred_mid))
@@ -158,10 +205,8 @@ class FACTEROnlineMonitor:
                     # For compatibility with existing metric code, we still populate ranked_mids_list
                     ranked_mids_list.append(mids)
 
-                    if pred_mid != -1:
+                    if pred_mid != -1 and not pred_text:
                         pred_text = item_text(int(pred_mid), item_db)
-                    else:
-                        pred_text = titles[0] if titles else "UNKNOWN_GENERATION"
 
                 s, d, delta = self.scorer.score_one(
                     row=row,
@@ -192,6 +237,7 @@ class FACTEROnlineMonitor:
             df[f"ranked_mids_iter{t}"] = ranked_mids_list
             df[f"generated_titles_iter{t}"] = generated_titles_list
             df[f"generated_mids_iter{t}"] = generated_mids_list
+            df[f"valid_at_k_iter{t}"] = valid_at_k_list
             df[f"system_prompt_iter{t}"] = system_prompts_list
             df[f"model_response_iter{t}"] = model_responses_list
 
