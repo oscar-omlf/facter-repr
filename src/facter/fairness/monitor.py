@@ -12,6 +12,7 @@ from facter.models.ranker import Ranker
 from facter.fairness.online import OnlineScorer, CalibrationArtifacts, OnlineScoringConfig
 from facter.fairness.threshold_update import update_threshold_theorem2
 from facter.prompting.repair import PromptRepairEngine, PromptRepairConfig
+from facter.fairness.scoring import item_text
 
 
 @dataclass(frozen=True)
@@ -137,7 +138,7 @@ class FACTEROnlineMonitor:
 
                 else:
                     # open generation (one-by-one; correct with your streaming updates)
-                    open_prompt = build_open_prompt(row.to_dict(), prompt_cfg)
+                    open_prompt = row["prompt_gen"]
                     titles = generator.generate_topk([open_prompt], [system_prompt], k=prompt_cfg.k_recs)[0]
                     generated_titles_list.append(titles)
                     model_responses_list.append(json.dumps(titles, ensure_ascii=False))

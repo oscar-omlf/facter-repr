@@ -7,7 +7,7 @@ import pandas as pd
 from facter.data.download import download_movielens_1m
 from facter.data.movielens import build_item_db, load_ml1m
 from facter.data.protocol import ProtocolConfig, build_candidate_sets, build_interactions_ml, sample_and_split
-from facter.data.prompts import PromptConfig, build_generation_prompt, build_ranking_prompt
+from facter.data.prompts import PromptConfig, build_generation_prompt, build_ranking_prompt, build_open_prompt
 from facter.data.paths import PROCESSED_DIR
 
 
@@ -40,7 +40,7 @@ def main() -> None:
         return [item_db[int(m)]["title"] for m in mids]
 
     for split_name, df in [("cal", cal), ("test", test)]:
-        df["prompt_gen"] = df.apply(lambda r: build_generation_prompt(r.to_dict(), pcfg), axis=1)
+        df["prompt_gen"] = df.apply(lambda r: build_open_prompt(r.to_dict(), pcfg), axis=1)
         df["candidate_titles"] = df["candidate_mids"].apply(titles_from_mids)
         df["prompt_rank"] = df.apply(lambda r: build_ranking_prompt(r.to_dict(), r["candidate_titles"], pcfg), axis=1)
 

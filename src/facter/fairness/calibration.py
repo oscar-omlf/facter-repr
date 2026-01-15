@@ -3,6 +3,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import json
 from tqdm.auto import tqdm
 
 from facter.data.prompts import PromptConfig, build_open_prompt
@@ -119,7 +120,7 @@ class OfflineCalibrator:
                 raise ValueError("open mode requires generator and prompt_cfg")
 
             # Build prompts
-            prompts = [build_open_prompt(df.iloc[i].to_dict(), prompt_cfg) for i in range(len(df))]
+            prompts = [df["prompt_gen"].iloc[i] for i in it]
             system_prompts = [system_prompt] * len(df)
 
             # Generate
@@ -180,6 +181,7 @@ class OfflineCalibrator:
             cal_df=df,
             cal_context_emb=context_emb,
             cal_pred_mid=pred_mids,
+            cal_pred_text=pred_texts_list,
             cal_pred_emb=pred_emb,
             scores_S=S,
             scores_d=d,

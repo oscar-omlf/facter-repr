@@ -45,15 +45,15 @@ def parse_json_list(text: str, k: int) -> List[str]:
 
 
 class HFOpenGenerator:
-    def __init__(self, cfg: HFGenConfig):
+    def __init__(self, cfg: HFGenConfig, tokenizer: AutoTokenizer = None, model: AutoModelForCausalLM = None):
         self.cfg = cfg
-        self.tokenizer = AutoTokenizer.from_pretrained(cfg.model_id, use_fast=True)
+        self.tokenizer = tokenizer or AutoTokenizer.from_pretrained(cfg.model_id, use_fast=True)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
         dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
 
-        self.model = AutoModelForCausalLM.from_pretrained(
+        self.model = model or AutoModelForCausalLM.from_pretrained(
             cfg.model_id,
             device_map="auto" if torch.cuda.is_available() else None,
             torch_dtype=dtype,
@@ -111,5 +111,10 @@ class HFOpenGenerator:
             for j in range(len(batch_prompts)):
                 cont = gen[j][toks["input_ids"].shape[-1] :]
                 txt = self.tokenizer.decode(cont, skip_special_tokens=True)
-                out_all.append(parse_json_list(txt, k))
+
+                json_list = parse_json_list(txt, k)
+                print(f"Generated text (prompt): {txt}")
+                print(f"Parsed list: {json_list}")
+                out_all.append(json_list)
+
         return out_all
