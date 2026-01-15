@@ -1,9 +1,16 @@
+import hashlib
+import pathlib
 import json, re
 from dataclasses import dataclass
 from typing import List, Sequence, Optional
 
+from anyio import Path
+
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
+
+def _sha256(s: str) -> str:
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -14,6 +21,11 @@ class HFGenConfig:
     top_p: float = 0.95
     repetition_penalty: float = 1.2
     batch_size: int = 8
+    cache_dir: Path = Path("data/cache/generator")
+    torch_dtype: str = "auto"       # "auto" | "float16" | "bfloat16"
+    device_map: str = "auto"        # passed to transformers
+    trust_remote_code: bool = False
+
 
 def parse_json_list(text: str, k: int) -> List[str]:
     if not text:
@@ -47,6 +59,8 @@ def parse_json_list(text: str, k: int) -> List[str]:
 class HFOpenGenerator:
     def __init__(self, cfg: HFGenConfig, tokenizer: AutoTokenizer = None, model: AutoModelForCausalLM = None):
         self.cfg = cfg
+        self.cfg.cache_dir.mkdir(parents=True, exist_ok=True)
+
         self.tokenizer = tokenizer or AutoTokenizer.from_pretrained(cfg.model_id, use_fast=True)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -60,6 +74,19 @@ class HFOpenGenerator:
         )
         self.model.eval()
 
+        self._model_cache_dir = self.cfg.cache_dir / _sha256(cfg.model_id)[:16]
+        self._model_cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def _cache_key(self, prompt_rank: str, system_prompt: Optional[str]) -> str:
+        blob = {
+            "system": system_prompt or "",
+            "user": prompt_rank,
+        }
+        return _sha256(json.dumps(blob, ensure_ascii=False, sort_keys=True))
+
+    def _cache_path(self, key: str) -> Path:
+        return self._model_cache_dir / f"{key}.json"
+
     @torch.inference_mode()
     def generate_topk(
         self,
@@ -69,6 +96,14 @@ class HFOpenGenerator:
     ) -> List[List[str]]:
         if len(prompts) != len(system_prompts):
             raise ValueError("prompts and system_prompts must have the same length")
+        
+        key = self._cache_key(prompts, system_prompts)
+        cpath = self._cache_path(key)
+        sync_path = pathlib.Path(str(cpath))
+        
+        if sync_path.exists():
+            obj = json.loads(sync_path.read_text(encoding="utf-8"))
+            return list(obj["json_list"])
 
         out_all: List[List[str]] = []
         device = self.model.device
@@ -116,5 +151,10 @@ class HFOpenGenerator:
                 print(f"Generated text (prompt): {txt}")
                 print(f"Parsed list: {json_list}")
                 out_all.append(json_list)
+
+        cpath.write_text(
+            json.dumps({"json_list": out_all}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
         return out_all
