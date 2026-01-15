@@ -80,7 +80,10 @@ def compute_snsr_snsv(
       - "tuple": group by the full protected attribute tuple (default).
       - "<attr>": group by one protected attribute (e.g., "gender") to control one at a time.
     """
+    logger.info(f"[compute_snsr_snsv] Input: df.shape={df.shape if df is not None else None}, recs_col={recs_col}, group_mode={group_mode}")
+    
     if df is None or df.empty:
+        logger.info("[compute_snsr_snsv] Empty dataframe, returning 0.0")
         return SNSMetrics(SNSR=0.0, SNSV=0.0, details={})
 
     if group_mode == "tuple":
@@ -90,20 +93,31 @@ def compute_snsr_snsv(
             raise ValueError(f"group_mode='{group_mode}' not found in df columns")
         groups = df.groupby(df[group_mode].astype(str))
 
+    logger.info(f"[compute_snsr_snsv] Total groups: {len(groups)}")
+
     # pool each group's recommendations into one embedding per example then mean within group
     group_vecs = {}
     for gname, gdf in groups:
+        logger.info(f"  Group '{gname}': size={len(gdf)}")
         if len(gdf) < min_group_size:
+            logger.info(f"    -> Skipped (< min_group_size={min_group_size})")
             continue
+        logger.info(f"    -> Processing {len(gdf)} examples")
         pooled = []
-        for recs in gdf[recs_col].tolist():
+        for idx, recs in enumerate(gdf[recs_col].tolist()):
             recs = recs if isinstance(recs, list) else []
+            logger.info(f"      Example {idx}: {len(recs)} recs: {recs[:2]}")  # log first 2
             pooled.append(_pool_recs_embedding(embedder, recs))
         G = torch.stack(pooled, dim=0)
         group_vecs[str(gname)] = torch.mean(G, dim=0)
+        logger.info(f"    -> Group embedding computed, shape={group_vecs[str(gname)].shape}")
 
     names = list(group_vecs.keys())
+    logger.info(f"[compute_snsr_snsv] Groups with sufficient size: {len(names)}")
+    logger.info(f"  Group names: {names}")
+    
     if len(names) < 2:
+        logger.info(f"[compute_snsr_snsv] < 2 groups, returning 0.0")
         return SNSMetrics(SNSR=0.0, SNSV=0.0, details={"n_groups_used": float(len(names))})
 
     # pairwise distances
@@ -111,10 +125,12 @@ def compute_snsr_snsv(
     for i in range(len(names)):
         for j in range(i + 1, len(names)):
             di = _cosine_distance(group_vecs[names[i]], group_vecs[names[j]])
+            logger.info(f"  Distance '{names[i]}' <-> '{names[j]}': {di:.4f}")
             dists.append(di)
 
     SNSR = float(np.max(dists)) if dists else 0.0
     SNSV = float(np.mean(dists)) if dists else 0.0
+    logger.info(f"[compute_snsr_snsv] SNSR={SNSR:.4f}, SNSV={SNSV:.4f}")
     return SNSMetrics(SNSR=SNSR, SNSV=SNSV, details={"n_groups_used": float(len(names))})
 
 

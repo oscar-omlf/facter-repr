@@ -37,6 +37,31 @@ _MOVIELENS_AGE_MAP = {
     56: "56+",
 }
 
+_OCCUPTION_MAP = {
+            0: "not specified",
+            1: "academic/educator",
+            2: "artist",
+            3: "clerical/admin",
+            4: "college/grad student",
+            5: "customer service",
+            6: "doctor/health care",
+            7: "executive/managerial",
+            8: "farmer",
+            9: "homemaker",
+            10: "K-12 student",
+            11: "lawyer",
+            12: "programmer",
+            13: "retired",
+            14: "sales/marketing",
+            15: "scientist",
+            16: "self-employed",
+            17: "technician/engineer",
+            18: "tradesman/craftsman",
+            19: "unemployed",
+            20: "writer",
+        }
+
+
 
 @dataclass
 class PromptRow:
@@ -104,6 +129,7 @@ class DatasetLoader:
             encoding="latin-1",
         )
         users["age"] = users["age"].map(_MOVIELENS_AGE_MAP).fillna(users["age"].astype(str))
+        users["occupation"] = users["occupation"].map(_OCCUPTION_MAP).fillna("not specified")
         self.data = ratings.merge(users, on="uid").sort_values(["uid", "timestamp"])
         # item_db: mid -> {title, genre}
         movies["mid"] = movies["mid"].astype(str)
@@ -117,7 +143,7 @@ class DatasetLoader:
         if gz_path.exists():
             return
         logger.info("Downloading Amazon Movies&TV dataset...")
-        resp = requests.get(Config.DATASETS["amazon"]["url"], stream=True, timeout=120)
+        resp = requests.get(Config.DATASETS["amazon"]["url"], stream=True, timeout=120, verify=False)
         resp.raise_for_status()
         with open(gz_path, "wb") as f:
             for chunk in tqdm(resp.iter_content(chunk_size=8192), desc="Downloading", unit="KB"):
@@ -156,6 +182,7 @@ class DatasetLoader:
         df["age"] = pd.cut(df["age"], bins=[17, 24, 34, 44, 54, 64, 200],
                            labels=["18-24", "25-34", "35-44", "45-54", "55-64", "65+"]).astype(str)
         df["occupation"] = rng.integers(0, 20, size=len(df)).astype(str)
+        df["occupation"] = df["occupation"].map(_OCCUPTION_MAP).fillna("not specified")
 
         self.data = df.sort_values(["uid", "timestamp"]).copy()
         self.item_db = (

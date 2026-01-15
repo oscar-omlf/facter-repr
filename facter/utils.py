@@ -9,6 +9,9 @@ import json
 import logging
 import re
 import json
+import pickle
+import hashlib
+from pathlib import Path
 from difflib import SequenceMatcher
 from typing import List, Optional, Tuple, Dict
 
@@ -21,8 +24,22 @@ logger = logging.getLogger(__name__)
 
 
 def setup_logging():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-    return logging.getLogger(__name__)
+    logger_root = logging.getLogger()
+    if logger_root.handlers:
+        return logger_root
+
+    logger_root.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s")
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(fmt)
+    logger_root.addHandler(stream_handler)
+
+    file_handler = logging.FileHandler("run.log", encoding="utf-8")
+    file_handler.setFormatter(fmt)
+    logger_root.addHandler(file_handler)
+
+    return logger_root
 
 
 # -------------------------
@@ -43,6 +60,7 @@ def _best_fuzzy_match(a: str, b: str) -> float:
 
 def parse_ranked_list(text: str, k: int) -> List[str]:
     if not text:
+        logger.info("[parse_ranked_list] Empty text")
         return []
 
     # 1. Pre-process to handle common LLM "JSON-ish" errors
@@ -53,6 +71,7 @@ def parse_ranked_list(text: str, k: int) -> List[str]:
     m = re.search(r"\[[\s\S]*\]", sanitized_text)
     if m:
         json_str = m.group(0)
+        logger.info(f"[parse_ranked_list] Found JSON: {json_str[:100]}")
         # Remove trailing commas before a closing bracket (common LLM error)
         json_str = re.sub(r",\s*\]", "]", json_str)
         try:
@@ -67,12 +86,14 @@ def parse_ranked_list(text: str, k: int) -> List[str]:
                         seen.add(val)
                     if len(out) >= k:
                         break
+                logger.info(f"[parse_ranked_list] Parsed JSON: {out}")
                 return out
-        except Exception:
-            pass # Fall back if JSON is truly malformed
+        except Exception as e:
+            logger.info(f"[parse_ranked_list] JSON parse failed: {e}")
 
     # 3. Improved Fallback Parse
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    logger.info(f"[parse_ranked_list] Fallback parse from {len(lines)} lines")
     out = []
     seen = set()
     
@@ -98,6 +119,7 @@ def parse_ranked_list(text: str, k: int) -> List[str]:
         if len(out) >= k:
             break
 
+    logger.info(f"[parse_ranked_list] Final output: {out}")
     return out
 
 def generate_recommendations(
@@ -107,6 +129,31 @@ def generate_recommendations(
     model,
 ) -> List[List[str]]:
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    # Setup cache directory
+    cache_dir = Path("./data/cache/recommendations")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Create cache key based on prompts and config
+    cache_key_str = json.dumps({
+        "prompts": prompts,
+        "system_msg": system_msg,
+        "max_tokens": Config.MAX_NEW_TOKENS,
+        "temperature": Config.TEMPERATURE,
+        "top_p": Config.TOP_P,
+    }, sort_keys=True)
+    cache_key = hashlib.sha256(cache_key_str.encode()).hexdigest()
+    cache_file = cache_dir / f"{cache_key}.pkl"
+    
+    # Try to load from cache
+    if cache_file.exists():
+        logger.info(f"[generate_recommendations] Loading from cache: {cache_file.name}")
+        try:
+            with open(cache_file, "rb") as f:
+                return pickle.load(f)
+        except Exception as e:
+            logger.info(f"[generate_recommendations] Cache load failed: {e}")
+    
     all_recs: List[List[str]] = []
 
     for i in range(0, len(prompts), Config.BATCH_SIZE):
@@ -138,9 +185,9 @@ def generate_recommendations(
         for txt in decoded:
             # extract generated part
             gen_part = txt.split("assistant")[-1].strip()
-            print(gen_part)
+            logger.info(gen_part)
             recs = parse_ranked_list(gen_part, Config.TOP_K_RECS)
-            print(recs)
+            logger.info(recs)
             all_recs.append(recs)
 
     # if any prompts were None, keep alignment by returning empty lists for them
@@ -149,6 +196,15 @@ def generate_recommendations(
         while len(all_recs) < len(prompts):
             all_recs.append([])
         all_recs = all_recs[: len(prompts)]
+    
+    # Save to cache
+    try:
+        with open(cache_file, "wb") as f:
+            pickle.dump(all_recs, f)
+        logger.info(f"[generate_recommendations] Saved to cache: {cache_file.name}")
+    except Exception as e:
+        logger.info(f"[generate_recommendations] Cache save failed: {e}")
+    
     return all_recs
 
 
@@ -185,11 +241,18 @@ def _best_fuzzy_match(a: str, b: str) -> float:
 
 def hitrate_ndcg_at_k(preds: List[str], gold: str, k: int) -> Tuple[float, float]:
     if not preds:
+        logger.info(f"[hitrate_ndcg_at_k] Empty preds, gold={gold}")
         return 0.0, 0.0
     gold = (gold or "").strip()
+    logger.info(f"[hitrate_ndcg_at_k] Comparing {len(preds)} preds against gold='{gold}'")
     for rank, p in enumerate(preds[:k], start=1):
-        if p and _best_fuzzy_match(p, gold) >= 0.85:
-            return 1.0, 1.0 / np.log2(rank + 1)
+        score = _best_fuzzy_match(p, gold) if p else 0.0
+        logger.info(f"  Rank {rank}: pred='{p}' -> score={score:.2f}")
+        if p and score >= 0.85:
+            ndcg = 1.0 / np.log2(rank + 1)
+            logger.info(f"[hitrate_ndcg_at_k] HIT! rank={rank}, NDCG={ndcg:.4f}")
+            return 1.0, ndcg
+    logger.info(f"[hitrate_ndcg_at_k] No hit found")
     return 0.0, 0.0
 
 
@@ -198,16 +261,20 @@ def evaluate_at_k_from_lists(
     gold_titles: List[str],
     k: int = 10,
 ) -> Dict[str, float]:
+    logger.info(f"[evaluate_at_k_from_lists] Processing {len(rec_lists)} items")
     hits, ndcgs = [], []
-    for recs, gold in zip(rec_lists, gold_titles):
+    for i, (recs, gold) in enumerate(zip(rec_lists, gold_titles)):
         recs = recs if isinstance(recs, list) else []
+        logger.info(f"  Item {i}: {len(recs)} recs, gold='{gold}'")
         h, n = hitrate_ndcg_at_k(recs, str(gold), k)
         hits.append(h)
         ndcgs.append(n)
-    return {
+    result = {
         f"HitRate@{k}": float(np.mean(hits)) if hits else 0.0,
         f"NDCG@{k}": float(np.mean(ndcgs)) if ndcgs else 0.0,
     }
+    logger.info(f"[evaluate_at_k_from_lists] Result: {result}")
+    return result
 
 
 def evaluate_valid_at_k(valid_at_k_list: List[float], k: int = 10) -> Dict[str, float]:
