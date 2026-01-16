@@ -16,6 +16,7 @@ def main() -> None:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--n", type=int, default=2500)
     p.add_argument("--n_candidates", type=int, default=100)
+    p.add_argument('--min_history', type=int, default=10)
     p.add_argument("--out", type=str, default=str(PROCESSED_DIR / "ml-1m" / "dataset.jsonl"))
     args = p.parse_args()
 
@@ -23,7 +24,7 @@ def main() -> None:
     frames = load_ml1m(raw_dir)
     item_db = build_item_db(frames.movies)
 
-    cfg = ProtocolConfig(sample_interactions=args.n, seed=args.seed, n_candidates=args.n_candidates)
+    cfg = ProtocolConfig(min_history=args.min_history, sample_interactions=args.n, seed=args.seed, n_candidates=args.n_candidates)
     interactions = build_interactions_ml(frames.ratings, frames.users, item_db, cfg)
 
     cal, test = sample_and_split(interactions, cfg)
