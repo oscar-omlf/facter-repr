@@ -112,6 +112,9 @@ class OfflineCalibrator:
         df["ranker_response"] = pred_result.model_responses
         df["pred_mid"] = pred_mids
         df["pred_text"] = pred_result.pred_texts
+        # In open mode, persist fraction of generated titles mapped to catalog
+        if predict_mode == "open":
+            df["valid_at_k"] = pred_result.valid_at_k_list
 
         # 3) Fit neighbor index
         ncfg = NeighborConfig(

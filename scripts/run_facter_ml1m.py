@@ -219,6 +219,13 @@ def main() -> None:
                 "offline.S_mean": float(np.mean(cal_res.scores_S)),
                 "offline.S_max": float(np.max(cal_res.scores_S)),
             })
+            # In open mode, track fraction of generated titles mapped to catalog during calibration
+            if args.predict_mode == "open" and "valid_at_k" in cal_res.cal_df.columns:
+                try:
+                    offline_valid_mean = float(np.mean(cal_res.cal_df["valid_at_k"]))
+                    log_metrics({"offline.ValidAtK.mean": offline_valid_mean})
+                except Exception:
+                    pass
             log_dataframe(cal_res.cal_df, "data/calibration_df.json", format="json")
 
         with stage("prepare_online_artifacts", timings):
@@ -243,6 +250,13 @@ def main() -> None:
             )
 
             baseline_metrics = evaluate_zero_shot(baseline_df, k=args.k)
+
+            # In open mode, track fraction of generated titles mapped to catalog for baseline
+            if args.predict_mode == "open" and "valid_at_k" in baseline_df.columns:
+                try:
+                    baseline_metrics["ValidAtK.mean"] = float(np.mean(baseline_df["valid_at_k"]))
+                except Exception:
+                    baseline_metrics["ValidAtK.mean"] = 0.0
 
             # CFR for baseline (supports both rank and open modes)
             cfr_kwargs = {
@@ -305,6 +319,15 @@ def main() -> None:
                 facter_metrics[f"iter{it}.violations"] = float(v)
                 facter_metrics[f"iter{it}.Recall{args.k}"] = m[f"Recall@{args.k}"]
                 facter_metrics[f"iter{it}.NDCG{args.k}"] = m[f"NDCG@{args.k}"]
+
+                # In open mode, track fraction of generated titles mapped to catalog per iteration
+                if args.predict_mode == "open":
+                    col_name = f"valid_at_k_iter{it}"
+                    if col_name in out_df.columns:
+                        try:
+                            facter_metrics[f"iter{it}.ValidAtK.mean"] = float(np.mean(out_df[col_name]))
+                        except Exception:
+                            facter_metrics[f"iter{it}.ValidAtK.mean"] = 0.0
 
                 # CFR for online monitor (supports both rank and open modes)
                 cfr_kwargs = {
