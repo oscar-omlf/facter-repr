@@ -46,6 +46,7 @@ class OfflineCalibrator:
       - score S_i (Eq.5)
       - conformal quantile Q_alpha^(0) (Eq.6)
     """
+
     def __init__(
         self,
         ranker: Ranker,
@@ -58,16 +59,21 @@ class OfflineCalibrator:
         self.context_encoder = context_encoder
         self.cfg = cfg
 
-    def _predict_top1_mid(self, row: pd.Series, system_prompt: Optional[str]) -> Tuple[int, List[int], str, List[int]]:
+    def _predict_top1_mid(
+        self, row: pd.Series, system_prompt: Optional[str]
+    ) -> Tuple[int, List[int], str, List[int]]:
         """Returns (top1_mid, all_ranked_mids, raw_response, ranked_indices)"""
         candidates_titles: List[str] = row["candidate_titles"]
         candidate_mids: List[int] = row["candidate_mids"]
-        
+
         # Get ranked indices from ranker
-        ranked_idx, raw_response = self.ranker.rank(row["prompt_rank"], candidates_titles, system_prompt=system_prompt)
+        ranked_idx, raw_response = self.ranker.rank(
+            row["prompt_rank"], candidates_titles, system_prompt=system_prompt
+        )
+
         best_idx = ranked_idx[0]
         top1_mid = int(candidate_mids[best_idx])
-        
+
         return top1_mid, raw_response
 
     def run(
@@ -110,7 +116,9 @@ class OfflineCalibrator:
 
         if predict_mode == "rank":
             for i in it:
-                top1_mid, raw_response = self._predict_top1_mid(df.iloc[i], system_prompt)
+                top1_mid, raw_response = self._predict_top1_mid(
+                    df.iloc[i], system_prompt
+                )
                 pred_mids_list.append(int(top1_mid))
                 pred_texts_list.append(item_text(int(top1_mid), item_db))
                 raw_responses_list.append(raw_response)
@@ -124,7 +132,9 @@ class OfflineCalibrator:
             system_prompts = [system_prompt] * len(df)
 
             # Generate
-            gen_lists = generator.generate_topk(prompts, system_prompts, k=prompt_cfg.k_recs)
+            gen_lists = generator.generate_topk(
+                prompts, system_prompts, k=prompt_cfg.k_recs
+            )
 
             # Minimal title->mid mapping (exact match on item_db title)
             # You can replace this with the more robust normalization index used in the script.
@@ -142,7 +152,9 @@ class OfflineCalibrator:
                 if mid != -1:
                     pred_texts_list.append(item_text(int(mid), item_db))
                 else:
-                    pred_texts_list.append(top1_title if top1_title else "UNKNOWN_GENERATION")
+                    pred_texts_list.append(
+                        top1_title if top1_title else "UNKNOWN_GENERATION"
+                    )
 
         else:
             raise ValueError("predict_mode must be 'rank' or 'open'")
@@ -166,13 +178,23 @@ class OfflineCalibrator:
         nidx.fit(df, context_emb)
 
         # 4) Compute S_i using pred_text in open mode
-        scfg = ScoreConfig(lambda_fairness=self.cfg.lambda_fairness, tau_rho=self.cfg.tau_rho)
+        scfg = ScoreConfig(
+            lambda_fairness=self.cfg.lambda_fairness, tau_rho=self.cfg.tau_rho
+        )
         scorer = NonconformityScorer(self.embedder, scfg)
 
         if predict_mode == "rank":
-            S, d, delta, pred_emb = scorer.compute(df, pred_mid_col="pred_mid", item_db=item_db, neighbor_index=nidx)
+            S, d, delta, pred_emb = scorer.compute(
+                df, pred_mid_col="pred_mid", item_db=item_db, neighbor_index=nidx
+            )
         else:
-            S, d, delta, pred_emb = scorer.compute(df, pred_mid_col=None, item_db=item_db, neighbor_index=nidx, pred_text_col="pred_text")
+            S, d, delta, pred_emb = scorer.compute(
+                df,
+                pred_mid_col=None,
+                item_db=item_db,
+                neighbor_index=nidx,
+                pred_text_col="pred_text",
+            )
 
         # 5) Quantile
         q0 = conformal_quantile(S, alpha=self.cfg.alpha)

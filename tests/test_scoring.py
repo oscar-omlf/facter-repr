@@ -9,6 +9,7 @@ class DummyEmbedder:
     """
     Minimal stand-in for TextEmbedder: encode_texts(texts)->np.ndarray
     """
+
     def __init__(self, mapping):
         self.mapping = mapping
 
@@ -29,13 +30,15 @@ def test_nonconformity_score_components():
     emb = DummyEmbedder(mapping)
 
     # Two rows; predicted equals reference => d=0
-    df = pd.DataFrame({
-        "target_mid": [1, 2],
-        "pred_mid": [1, 2],
-        "gender": ["M", "F"],
-        "age": [25, 25],
-        "occupation": [1, 1],
-    })
+    df = pd.DataFrame(
+        {
+            "target_mid": [1, 2],
+            "pred_mid": [1, 2],
+            "gender": ["M", "F"],
+            "age": [25, 25],
+            "occupation": [1, 1],
+        }
+    )
     item_db = {
         1: {"title": "A", "genres": "G"},
         2: {"title": "B", "genres": "G"},
@@ -51,7 +54,7 @@ def test_nonconformity_score_components():
     scfg = ScoreConfig(lambda_fairness=1.0, tau_rho=0.0)
     scorer = NonconformityScorer(emb, scfg)  # type: ignore[arg-type]
 
-    S, d, delta = scorer.compute(df, "pred_mid", item_db, nidx)
+    S, d, delta, pred_emb = scorer.compute(df, "pred_mid", item_db, nidx)
 
     # d should be 0 because pred==ref and cosine=1
     assert np.allclose(d, np.array([0.0, 0.0], dtype=np.float32))

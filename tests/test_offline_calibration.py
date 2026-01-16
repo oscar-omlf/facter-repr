@@ -9,7 +9,7 @@ from facter.models.ranker import Ranker
 class DummyRanker:
     def rank(self, prompt_rank, candidate_titles, system_prompt=None):
         # Always rank in given order
-        return list(range(len(candidate_titles)))
+        return list(range(len(candidate_titles))), 42
 
 
 class DummyEmbedder:
@@ -33,17 +33,19 @@ def test_offline_calibration_produces_q0():
     ctx = ContextEncoder(emb, ContextEncodingConfig(max_history_items=0))  # type: ignore[arg-type]
 
     # calibration df
-    df = pd.DataFrame({
-        "gender": ["M", "F"],
-        "age": [25, 25],
-        "occupation": [1, 1],
-        "history_titles": [["a"], ["b"]],
-        "candidate_mids": [[1, 2], [1, 2]],
-        "candidate_titles": [["X", "Y"], ["X", "Y"]],
-        "prompt_rank": ["p1", "p2"],
-        "target_mid": [1, 2],
-        "target_title": ["X", "Y"],
-    })
+    df = pd.DataFrame(
+        {
+            "gender": ["M", "F"],
+            "age": [25, 25],
+            "occupation": [1, 1],
+            "history_titles": [["a"], ["b"]],
+            "candidate_mids": [[1, 2], [1, 2]],
+            "candidate_titles": [["X", "Y"], ["X", "Y"]],
+            "prompt_rank": ["p1", "p2"],
+            "target_mid": [1, 2],
+            "target_title": ["X", "Y"],
+        }
+    )
     item_db = {1: {"title": "X", "genres": "G"}, 2: {"title": "Y", "genres": "G"}}
 
     cal = OfflineCalibrator(
