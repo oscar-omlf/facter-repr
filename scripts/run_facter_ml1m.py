@@ -196,11 +196,11 @@ def main() -> None:
             prompt_cfg = PromptConfig(k_recs=args.k)
             cfr_cfg = CFRConfig(flip_attr=args.cfr_flip_attr, k=args.k)
 
-            catalog_mapper = CatalogMapper(
+            catalogue_mapper = CatalogMapper(
                 embedder=embedder, item_db=item_db, title_key="title"
             )
-            catalog_mapper.build(dedup=True)
-            log_metrics({"catalog.items_n": float(len(catalog_mapper.catalog_titles))})
+            catalogue_mapper.build(dedup=True)
+            log_metrics({"catalog.items_n": float(len(catalogue_mapper.catalog_titles))})
 
         with stage("offline_calibration", timings):
             cal_res = calibrator.run(
@@ -211,7 +211,7 @@ def main() -> None:
                 predict_mode=args.predict_mode,
                 generator=generator,
                 prompt_cfg=prompt_cfg,
-                catalog_mapper=catalog_mapper,
+                catalogue_mapper=catalogue_mapper,
             )
             log_metrics({
                 "offline.q_alpha0": float(cal_res.q_alpha0),
@@ -243,7 +243,7 @@ def main() -> None:
             item_db=item_db,
             predict_mode=args.predict_mode,
             k=args.k,
-            catalog_mapper=catalog_mapper,
+            catalogue_mapper=catalogue_mapper,
             title_to_mid=title_to_mid,
             progress=args.progress,
             )
@@ -272,7 +272,7 @@ def main() -> None:
                 cfr_kwargs["ranker"] = ranker
             elif args.predict_mode == "open":
                 cfr_kwargs["generator"] = generator
-                cfr_kwargs["catalog_mapper"] = catalog_mapper
+                cfr_kwargs["catalogue_mapper"] = catalogue_mapper
                 cfr_kwargs["title_to_mid"] = title_to_mid
 
             baseline_cfr = compute_cfr(**cfr_kwargs)
@@ -416,7 +416,7 @@ def main() -> None:
                     cfr_kwargs["ranker"] = ranker
                 elif args.predict_mode == "open":
                     cfr_kwargs["generator"] = generator
-                    cfr_kwargs["catalog_mapper"] = catalog_mapper
+                    cfr_kwargs["catalogue_mapper"] = catalogue_mapper
                     cfr_kwargs["title_to_mid"] = title_to_mid
                 cfr_metric = compute_cfr(**cfr_kwargs)
                 facter_metrics[f"iter{it}.CFR_{args.cfr_flip_attr}"] = float(cfr_metric)

@@ -1,5 +1,5 @@
 """
-catalog_map.py: Map open-ended LLM outputs (free-text titles) to the closest
+catalogue_map.py: Map open-ended LLM outputs (free-text titles) to the closest
 catalog item using an embedding model.
 
 The LLM can output plausible titles,

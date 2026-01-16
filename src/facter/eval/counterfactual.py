@@ -92,7 +92,7 @@ def compute_cfr(
     predict_mode: str = "rank",  # "rank" | "open"
     ranker: Optional[Ranker] = None,
     generator: Optional[Generator] = None,
-    catalog_mapper: Optional[CatalogMapper] = None,
+    catalogue_mapper: Optional[CatalogMapper] = None,
     title_to_mid: Optional[Dict[str, int]] = None,
     min_sim: float = 0.65,
     iter: Optional[int] = None,
@@ -104,7 +104,7 @@ def compute_cfr(
 
     Supports both rank and open-generation modes:
     - Rank mode: Uses ranker to rank candidates for original and counterfactual prompts
-    - Open mode: Uses generator to generate titles for both prompts, maps to mids via catalog_mapper/title_to_mid
+    - Open mode: Uses generator to generate titles for both prompts, maps to mids via catalogue_mapper/title_to_mid
     """
     if cfg.flip_attr not in cfg.protected_cols:
         raise ValueError(f"flip_attr must be one of {cfg.protected_cols}")
@@ -142,7 +142,7 @@ def compute_cfr(
 
     elif predict_mode == "open":
         # Open mode: use generator to produce titles, map to mids
-        if title_to_mid is None and catalog_mapper is None:
+        if title_to_mid is None and catalogue_mapper is None:
             title_to_mid = build_title_to_mid_dict(item_db)
 
         # Collect all prompts (original and counterfactual) for batched generation
@@ -179,11 +179,11 @@ def compute_cfr(
             mids_orig: List[int] = []
             mids_cf: List[int] = []
 
-            if catalog_mapper is not None:
+            if catalogue_mapper is not None:
                 # Use embedding-based mapper
-                map_res_orig = catalog_mapper.map_list(titles_orig, k=cfg.k, min_sim=min_sim)
+                map_res_orig = catalogue_mapper.map_list(titles_orig, k=cfg.k, min_sim=min_sim)
                 mids_orig = [int(m) for m in getattr(map_res_orig, "mapped_mids", []) if m is not None]
-                map_res_cf = catalog_mapper.map_list(titles_cf, k=cfg.k, min_sim=min_sim)
+                map_res_cf = catalogue_mapper.map_list(titles_cf, k=cfg.k, min_sim=min_sim)
                 mids_cf = [int(m) for m in getattr(map_res_cf, "mapped_mids", []) if m is not None]
             elif title_to_mid is not None:
                 # Use normalized dict mapping
