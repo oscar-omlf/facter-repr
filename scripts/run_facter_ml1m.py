@@ -306,6 +306,10 @@ def main() -> None:
         with stage("compute_facter_metrics", timings):
             facter_metrics = {}
             targets = out_df["target_mid"].astype(int).tolist()
+            group_keys = out_df[list(protected_cols)].astype(str).apply(
+                lambda r: "|".join([f"{c}={r[c]}" for c in protected_cols]),
+                axis=1,
+            ).tolist()
 
             for it in range(1, args.max_iterations + 1):
                 if args.predict_mode == "rank":
