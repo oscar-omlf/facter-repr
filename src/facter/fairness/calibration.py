@@ -69,7 +69,7 @@ class OfflineCalibrator:
         predict_mode: str = "rank",  # "rank" | "open"
         generator: Optional[Generator] = None,
         prompt_cfg: Optional[PromptConfig] = None,
-        catalog_mapper: Optional[CatalogMapper] = None,
+        catalogue_mapper: Optional[CatalogMapper] = None,
         min_sim: float = 0.65,
     ) -> OfflineCalibrationResult:
         """
@@ -100,7 +100,7 @@ class OfflineCalibrator:
             if generator is None or prompt_cfg is None:
                 raise ValueError("open mode requires generator and prompt_cfg")
             pred_result = predict_batch_open(df, generator, item_db, prompt_cfg, system_prompt,
-                                             catalog_mapper, title_to_mid, min_sim, progress)
+                                             catalogue_mapper, title_to_mid, min_sim, progress)
         else:
             raise ValueError("predict_mode must be 'rank' or 'open'")
 

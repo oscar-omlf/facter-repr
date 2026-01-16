@@ -66,7 +66,7 @@ def predict_single_open(
     item_db: Dict[int, Dict[str, str]],
     prompt_cfg: PromptConfig,
     system_prompt: Optional[str] = None,
-    catalog_mapper: Optional[CatalogMapper] = None,
+    catalogue_mapper: Optional[CatalogMapper] = None,
     title_to_mid: Optional[Dict[str, int]] = None,
     min_sim: float = 0.65,
 ) -> PredictionResult:
@@ -87,8 +87,8 @@ def predict_single_open(
     pred_text = ""
 
     # Preferred: embedding-based catalog mapping (authors' approach)
-    if catalog_mapper is not None:
-        map_res = catalog_mapper.map_list(titles, k=prompt_cfg.k_recs, min_sim=min_sim)
+    if catalogue_mapper is not None:
+        map_res = catalogue_mapper.map_list(titles, k=prompt_cfg.k_recs, min_sim=min_sim)
         # keep valid mapped mids in rank order
         mids = [int(m) for m in getattr(map_res, "mapped_mids", []) if m is not None]
         valid_at_k = float(getattr(map_res, "valid_at_k", 0.0))
@@ -189,7 +189,7 @@ def predict_batch_open(
     item_db: Dict[int, Dict[str, str]],
     prompt_cfg: PromptConfig,
     system_prompt: Optional[str] = None,
-    catalog_mapper: Optional[CatalogMapper] = None,
+    catalogue_mapper: Optional[CatalogMapper] = None,
     title_to_mid: Optional[Dict[str, int]] = None,
     min_sim: float = 0.65,
     progress: bool = False,
@@ -221,7 +221,7 @@ def predict_batch_open(
     model_responses_list: List[str] = []
 
     # Prepare fallback mapping if needed
-    if title_to_mid is None and catalog_mapper is None:
+    if title_to_mid is None and catalogue_mapper is None:
         title_to_mid = build_title_to_mid_dict(item_db)
 
     for i in range(n):
@@ -233,8 +233,8 @@ def predict_batch_open(
         valid_at_k = 0.0
         pred_text = ""
 
-        if catalog_mapper is not None:
-            map_res = catalog_mapper.map_list(titles, k=prompt_cfg.k_recs, min_sim=min_sim)
+        if catalogue_mapper is not None:
+            map_res = catalogue_mapper.map_list(titles, k=prompt_cfg.k_recs, min_sim=min_sim)
             mids = [int(m) for m in getattr(map_res, "mapped_mids", []) if m is not None]
             valid_at_k = float(getattr(map_res, "valid_at_k", 0.0))
             mapped_titles = getattr(map_res, "mapped_titles", [])

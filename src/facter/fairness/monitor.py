@@ -61,7 +61,7 @@ class FACTEROnlineMonitor:
         generator: Optional[Generator] = None,
         prompt_cfg: Optional[PromptConfig] = None,
         title_to_mid: Optional[Dict[str, int]] = None,
-        catalog_mapper: Optional[Any] = None,
+        catalogue_mapper: Optional[Any] = None,
         min_sim: float = 0.65,
     ) -> Tuple[pd.DataFrame, list[OnlineIterationLog]]:
         """
@@ -73,11 +73,11 @@ class FACTEROnlineMonitor:
 
         Open-mode:
         - generate top-k titles (JSON list)
-        - map titles->mids using catalog_mapper (embedding NN + threshold) if provided
+        - map titles->mids using catalogue_mapper (embedding NN + threshold) if provided
           (fallback: exact title_to_mid dict if provided)
         - score using pred_text (item_text(mapped_mid) if mapped else raw title)
 
-        catalog_mapper is expected to expose:
+        catalogue_mapper is expected to expose:
           map_list(titles: List[str], k: int, min_sim: float) -> object with fields:
             - mapped_mids: List[Optional[int]]
             - mapped_titles: List[str]
@@ -141,7 +141,7 @@ class FACTEROnlineMonitor:
                 else:  # predict_mode == "open"
                     pred_result = predict_single_open(
                         row, generator, item_db, prompt_cfg, system_prompt,
-                        catalog_mapper, title_to_mid, min_sim
+                        catalogue_mapper, title_to_mid, min_sim
                     )
                     pred_mid = pred_result.pred_mids[0]
                     pred_text = pred_result.pred_texts[0]

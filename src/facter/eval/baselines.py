@@ -25,7 +25,7 @@ def run_zero_shot(
     k: int = 10,
     system_prompt: str | None = None,
     progress: bool = False,
-    catalog_mapper: Optional[CatalogMapper] = None,
+    catalogue_mapper: Optional[CatalogMapper] = None,
     title_to_mid: Optional[Dict[str, int]] = None,
     min_sim: float = 0.65,
 ) -> pd.DataFrame:
@@ -38,7 +38,7 @@ def run_zero_shot(
     
     Open mode:
     - Requires generator and item_db
-    - Generates top-k titles and maps to mids via catalog_mapper or title_to_mid fallback
+    - Generates top-k titles and maps to mids via catalogue_mapper or title_to_mid fallback
     """
     if predict_mode == "rank":
         if ranker is None:
@@ -54,7 +54,7 @@ def run_zero_shot(
             raise ValueError("open mode requires generator and item_db")
         
         # Build title_to_mid if not provided and no catalog mapper
-        if title_to_mid is None and catalog_mapper is None:
+        if title_to_mid is None and catalogue_mapper is None:
             title_to_mid = build_title_to_mid_dict(item_db)
         
         # Create prompt config with k_recs set to k
@@ -66,7 +66,7 @@ def run_zero_shot(
             item_db,
             prompt_cfg,
             system_prompt=system_prompt,
-            catalog_mapper=catalog_mapper,
+            catalogue_mapper=catalogue_mapper,
             title_to_mid=title_to_mid,
             min_sim=min_sim,
             progress=progress,
@@ -111,7 +111,7 @@ def run_zero_shot_generation(
     item_db: Dict[int, Dict[str, str]],
     k: int = 10,
     system_prompt: str | None = None,
-    catalog_mapper: Optional[CatalogMapper] = None,
+    catalogue_mapper: Optional[CatalogMapper] = None,
     title_to_mid: Optional[Dict[str, int]] = None,
     progress: bool = False,
     min_sim: float = 0.65,
@@ -127,7 +127,7 @@ def run_zero_shot_generation(
         predict_mode="open",
         k=k,
         system_prompt=system_prompt,
-        catalog_mapper=catalog_mapper,
+        catalogue_mapper=catalogue_mapper,
         title_to_mid=title_to_mid,
         progress=progress,
         min_sim=min_sim,
