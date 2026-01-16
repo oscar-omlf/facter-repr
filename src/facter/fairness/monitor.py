@@ -3,16 +3,15 @@ from typing import Dict, Optional, Tuple, Any
 
 import numpy as np
 import pandas as pd
-import json
 from tqdm.auto import tqdm
 
-from facter.data.prompts import PromptConfig, build_open_prompt
+from facter.data.prompts import PromptConfig
 from facter.models.generator import Generator
 from facter.models.ranker import Ranker
+from facter.eval.prediction import predict_single_rank, predict_single_open
 from facter.fairness.online import OnlineScorer, CalibrationArtifacts
 from facter.fairness.threshold_update import update_threshold_theorem2
 from facter.prompting.repair import PromptRepairEngine
-from facter.fairness.scoring import item_text
 
 
 @dataclass(frozen=True)
@@ -127,82 +126,32 @@ class FACTEROnlineMonitor:
                 )
                 system_prompts_list.append(system_prompt)
 
-                pred_mid: int = -1
-                pred_text: str = ""
-
+                # Use unified prediction functions from prediction.py
                 if predict_mode == "rank":
-                    # NOTE: this assumes your Ranker.rank returns (ranked_idx, raw_response).
-                    ranked_idx, raw_response = self.ranker.rank(
-                        row["prompt_rank"], row["candidate_titles"], system_prompt=system_prompt
-                    )
-                    best_idx = ranked_idx[0]
-                    pred_mid = int(row["candidate_mids"][best_idx])
+                    pred_result = predict_single_rank(row, self.ranker, item_db, system_prompt)
+                    pred_mid = pred_result.pred_mids[0]
+                    pred_text = pred_result.pred_texts[0]
                     preds.append(pred_mid)
-
-                    ranked_mids = [int(row["candidate_mids"][idx]) for idx in ranked_idx]
-                    ranked_mids_list.append(ranked_mids)
-
-                    model_responses_list.append(raw_response)
+                    ranked_mids_list.append(pred_result.ranked_mids_list[0])
+                    model_responses_list.append(pred_result.model_responses[0])
                     generated_titles_list.append([])
                     generated_mids_list.append([])
                     valid_at_k_list.append(0.0)
 
-                    pred_text = item_text(pred_mid, item_db)
-
-                else:
-                    # open generation (one-by-one; correct with streaming updates)
-                    open_prompt = row.get("prompt_open", row.get("prompt_gen", None))
-                    if open_prompt is None:
-                        # fall back to building if needed
-                        open_prompt = build_open_prompt(row.to_dict(), prompt_cfg)
-
-                    titles = generator.generate_topk([open_prompt], [system_prompt], k=prompt_cfg.k_recs)[0]
-
-                    generated_titles_list.append(titles)
-                    model_responses_list.append(json.dumps(titles, ensure_ascii=False))
-
-                    mids: list[int] = []
-                    valid_at_k = 0.0
-
-                    # Preferred: embedding-based catalog mapping (authors' approach)
-                    if catalog_mapper is not None:
-                        map_res = catalog_mapper.map_list(titles, k=prompt_cfg.k_recs, min_sim=min_sim)
-                        # keep valid mapped mids in rank order
-                        mids = [int(m) for m in getattr(map_res, "mapped_mids", []) if m is not None]
-                        valid_at_k = float(getattr(map_res, "valid_at_k", 0.0))
-
-                        # use canonical mapped title for pred_text if available
-                        mapped_titles = getattr(map_res, "mapped_titles", [])
-                        if mapped_titles and mapped_titles[0]:
-                            pred_text = str(mapped_titles[0])
-                        else:
-                            pred_text = titles[0] if titles else "UNKNOWN_GENERATION"
-
-                    # Fallback: exact normalized dict mapping (not paper-aligned, but keeps pipeline usable)
-                    elif title_to_mid is not None:
-                        for tt in titles:
-                            key = str(tt).strip().lower()
-                            mid = title_to_mid.get(key, -1)
-                            if mid != -1 and int(mid) not in mids:
-                                mids.append(int(mid))
-                        # crude "valid@k" proxy under dict mapping
-                        valid_at_k = float(min(len(mids), prompt_cfg.k_recs)) / float(prompt_cfg.k_recs) if prompt_cfg.k_recs else 0.0
-                        pred_text = item_text(int(mids[0]), item_db) if mids else (titles[0] if titles else "UNKNOWN_GENERATION")
-
-                    else:
-                        pred_text = titles[0] if titles else "UNKNOWN_GENERATION"
-
-                    generated_mids_list.append(mids)
-                    valid_at_k_list.append(valid_at_k)
-
-                    pred_mid = mids[0] if mids else -1
-                    preds.append(int(pred_mid))
-
-                    # For compatibility with existing metric code, we still populate ranked_mids_list
-                    ranked_mids_list.append(mids)
-
-                    if pred_mid != -1 and not pred_text:
-                        pred_text = item_text(int(pred_mid), item_db)
+                else:  # predict_mode == "open"
+                    pred_result = predict_single_open(
+                        row, generator, item_db, prompt_cfg, system_prompt,
+                        catalog_mapper, title_to_mid, min_sim
+                    )
+                    pred_mid = pred_result.pred_mids[0]
+                    pred_text = pred_result.pred_texts[0]
+                    preds.append(pred_mid)
+                    generated_titles_list.append(pred_result.generated_titles_list[0])
+                    generated_mids_list.append(pred_result.ranked_mids_list[0])  # mapped mids
+                    valid_at_k_list.append(pred_result.valid_at_k_list[0])
+                    model_responses_list.append(pred_result.model_responses[0])
+                    # For compatibility with existing metric code
+                    ranked_mids_list.append(pred_result.ranked_mids_list[0])
 
                 s, d, delta = self.scorer.score_one(
                     row=row,

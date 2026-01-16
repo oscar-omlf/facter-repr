@@ -5,9 +5,12 @@ import numpy as np
 import pandas as pd
 
 from facter.data.prompts import AGE_ID2LABEL, OCC_ID2LABEL
-from facter.data.prompts import PromptConfig, build_ranking_prompt
+from facter.data.prompts import PromptConfig, build_ranking_prompt, build_open_prompt
+from facter.eval.catalogue_map import CatalogMapper
+from facter.eval.prediction import build_title_to_mid_dict
 from facter.fairness.scoring import item_text
 from facter.models.embedder import TextEmbedder
+from facter.models.generator import Generator
 from facter.models.ranker import Ranker
 
 
@@ -82,43 +85,127 @@ def _l2_distance(u: np.ndarray, v: np.ndarray) -> float:
 
 def compute_cfr(
     df: pd.DataFrame,
-    ranker: Ranker,
     embedder: TextEmbedder,
     item_db: Dict[int, Dict[str, str]],
     prompt_cfg: PromptConfig,
     cfg: CFRConfig,
+    predict_mode: str = "rank",  # "rank" | "open"
+    ranker: Optional[Ranker] = None,
+    generator: Optional[Generator] = None,
+    catalog_mapper: Optional[CatalogMapper] = None,
+    title_to_mid: Optional[Dict[str, int]] = None,
+    min_sim: float = 0.65,
     iter: Optional[int] = None,
 ) -> float:
     """
     CFR proxy via counterfactual flips:
       CFR = mean_{examples} || f(x,a) - f(x,a') ||_2
     where f(.) is the mean embedding of top-k recommended items.
+
+    Supports both rank and open-generation modes:
+    - Rank mode: Uses ranker to rank candidates for original and counterfactual prompts
+    - Open mode: Uses generator to generate titles for both prompts, maps to mids via catalog_mapper/title_to_mid
     """
     if cfg.flip_attr not in cfg.protected_cols:
         raise ValueError(f"flip_attr must be one of {cfg.protected_cols}")
 
+    if predict_mode == "rank" and ranker is None:
+        raise ValueError("rank mode requires ranker")
+    if predict_mode == "open" and generator is None:
+        raise ValueError("open mode requires generator")
+
     dists: List[float] = []
-    for _, row in df.iterrows():
-        cand_titles = row["candidate_titles"]
-        prompt_orig = row["prompt_rank"]
-        system_prompt = row[f"system_prompt_iter{iter}" if iter is not None else "system_prompt"]
 
-        # counterfactual prompt
-        row_cf = row.to_dict()
-        row_cf[cfg.flip_attr] = flip_protected_value(cfg.flip_attr, row_cf[cfg.flip_attr])
-        prompt_cf = build_ranking_prompt(row_cf, cand_titles, prompt_cfg)
+    if predict_mode == "rank":
+        # Rank mode: use ranker to select top-k from candidate set
+        for _, row in df.iterrows():
+            cand_titles = row["candidate_titles"]
+            prompt_orig = row["prompt_rank"]
+            system_prompt = row[f"system_prompt_iter{iter}" if iter is not None else "system_prompt"]
 
-        idx_orig, _ = ranker.rank(prompt_orig, cand_titles, system_prompt=system_prompt)
-        idx_orig = idx_orig[: cfg.k]
-        idx_cf, _ = ranker.rank(prompt_cf, cand_titles, system_prompt=system_prompt)
-        idx_cf = idx_cf[: cfg.k]
+            # counterfactual prompt
+            row_cf = row.to_dict()
+            row_cf[cfg.flip_attr] = flip_protected_value(cfg.flip_attr, row_cf[cfg.flip_attr])
+            prompt_cf = build_ranking_prompt(row_cf, cand_titles, prompt_cfg)
 
-        mids_orig = [int(row["candidate_mids"][i]) for i in idx_orig]
-        mids_cf = [int(row["candidate_mids"][i]) for i in idx_cf]
+            idx_orig, _ = ranker.rank(prompt_orig, cand_titles, system_prompt=system_prompt)
+            idx_orig = idx_orig[: cfg.k]
+            idx_cf, _ = ranker.rank(prompt_cf, cand_titles, system_prompt=system_prompt)
+            idx_cf = idx_cf[: cfg.k]
 
-        v_orig = _embed_list_mean(embedder, mids_orig, item_db)
-        v_cf = _embed_list_mean(embedder, mids_cf, item_db)
-        dists.append(_l2_distance(v_orig, v_cf))
+            mids_orig = [int(row["candidate_mids"][i]) for i in idx_orig]
+            mids_cf = [int(row["candidate_mids"][i]) for i in idx_cf]
+
+            v_orig = _embed_list_mean(embedder, mids_orig, item_db)
+            v_cf = _embed_list_mean(embedder, mids_cf, item_db)
+            dists.append(_l2_distance(v_orig, v_cf))
+
+    elif predict_mode == "open":
+        # Open mode: use generator to produce titles, map to mids
+        if title_to_mid is None and catalog_mapper is None:
+            title_to_mid = build_title_to_mid_dict(item_db)
+
+        # Collect all prompts (original and counterfactual) for batched generation
+        prompts_all: List[str] = []
+        system_prompts_all: List[str] = []
+        
+        for _, row in df.iterrows():
+            system_prompt = row[f"system_prompt_iter{iter}" if iter is not None else "system_prompt"]
+
+            # Original prompt
+            prompt_orig = row.get("prompt_open", row.get("prompt_gen", None))
+            if prompt_orig is None:
+                prompt_orig = build_open_prompt(row.to_dict(), prompt_cfg)
+
+            # Counterfactual prompt
+            row_cf = row.to_dict()
+            row_cf[cfg.flip_attr] = flip_protected_value(cfg.flip_attr, row_cf[cfg.flip_attr])
+            prompt_cf = build_open_prompt(row_cf, prompt_cfg)
+
+            prompts_all.append(prompt_orig)
+            prompts_all.append(prompt_cf)
+            system_prompts_all.append(system_prompt)
+            system_prompts_all.append(system_prompt)
+
+        # Single batched generation call for all prompts
+        all_titles = generator.generate_topk(prompts_all, system_prompts_all, k=cfg.k)
+
+        # Process results in pairs (original, counterfactual)
+        for i in range(0, len(all_titles), 2):
+            titles_orig = all_titles[i]
+            titles_cf = all_titles[i + 1]
+
+            # Map to mids
+            mids_orig: List[int] = []
+            mids_cf: List[int] = []
+
+            if catalog_mapper is not None:
+                # Use embedding-based mapper
+                map_res_orig = catalog_mapper.map_list(titles_orig, k=cfg.k, min_sim=min_sim)
+                mids_orig = [int(m) for m in getattr(map_res_orig, "mapped_mids", []) if m is not None]
+                map_res_cf = catalog_mapper.map_list(titles_cf, k=cfg.k, min_sim=min_sim)
+                mids_cf = [int(m) for m in getattr(map_res_cf, "mapped_mids", []) if m is not None]
+            elif title_to_mid is not None:
+                # Use normalized dict mapping
+                for tt in titles_orig:
+                    key = str(tt).strip().lower()
+                    mid = title_to_mid.get(key, -1)
+                    if mid != -1 and int(mid) not in mids_orig:
+                        mids_orig.append(int(mid))
+                for tt in titles_cf:
+                    key = str(tt).strip().lower()
+                    mid = title_to_mid.get(key, -1)
+                    if mid != -1 and int(mid) not in mids_cf:
+                        mids_cf.append(int(mid))
+
+            # Compute distance if we have valid mids
+            if mids_orig and mids_cf:
+                v_orig = _embed_list_mean(embedder, mids_orig, item_db)
+                v_cf = _embed_list_mean(embedder, mids_cf, item_db)
+                dists.append(_l2_distance(v_orig, v_cf))
+
+    else:
+        raise ValueError("predict_mode must be 'rank' or 'open'")
 
     return float(np.mean(dists)) if dists else 0.0
 

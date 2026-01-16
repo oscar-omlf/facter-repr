@@ -19,8 +19,6 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
-import torch
-from sentence_transformers import util
 
 logger = logging.getLogger(__name__)
 
@@ -71,25 +69,22 @@ class MapResult:
 class CatalogMapper:
     """
     Build an embedding index over catalog titles and map arbitrary strings to nearest neighbor.
+    Uses the TextEmbedder class for consistent embedding behavior with caching.
     """
 
     def __init__(
         self,
-        embedder,
+        embedder,  # TextEmbedder instance
         item_db: Dict[str, Dict],
         title_key: str = "title",
-        device: Optional[str] = None,
-        batch_size: int = 256,
     ):
         self.embedder = embedder
         self.item_db = item_db
         self.title_key = title_key
-        self.batch_size = batch_size
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
         self._catalog_mids: List[str] = []
         self._catalog_titles: List[str] = []
-        self._catalog_embeds: Optional[torch.Tensor] = None
+        self._catalog_embeds: Optional[np.ndarray] = None
 
     @property
     def catalog_titles(self) -> List[str]:
@@ -101,7 +96,7 @@ class CatalogMapper:
 
     def build(self, dedup: bool = True) -> None:
         """
-        Build embeddings for all catalog titles.
+        Build embeddings for all catalog titles using TextEmbedder.
         """
         mids = []
         titles = []
@@ -125,12 +120,8 @@ class CatalogMapper:
         self._catalog_titles = titles
 
         logger.info(f"Building catalog embeddings for {len(self._catalog_titles)} items...")
-        self._catalog_embeds = self.embedder.encode(
-            self._catalog_titles,
-            convert_to_tensor=True,
-            show_progress_bar=True,
-            batch_size=self.batch_size,
-        ).to(self.device)
+        # Use TextEmbedder.encode_texts which returns normalized numpy array [N, D]
+        self._catalog_embeds = self.embedder.encode_texts(self._catalog_titles)
 
     def map_one(self, title: str, min_sim: float = 0.65) -> Tuple[Optional[str], Optional[str], float]:
         """
@@ -144,10 +135,14 @@ class CatalogMapper:
         if not title:
             return None, None, 0.0
 
-        q = self.embedder.encode(title, convert_to_tensor=True, show_progress_bar=False).to(self.device)
-        sims = util.cos_sim(q.unsqueeze(0), self._catalog_embeds).squeeze(0)
-        j = int(torch.argmax(sims).item())
-        sim = float(sims[j].item())
+        # Use TextEmbedder.encode_text which returns normalized numpy array [D]
+        q = self.embedder.encode_text(title)
+        
+        # Compute cosine similarity with all catalog embeddings
+        # Both q and catalog_embeds are already normalized, so dot product = cosine similarity
+        sims = np.dot(self._catalog_embeds, q)  # [N]
+        j = int(np.argmax(sims))
+        sim = float(sims[j])
 
         if sim < min_sim:
             return None, None, sim

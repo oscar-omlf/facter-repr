@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+from sentence_transformers import SentenceTransformer
 
 from facter.data.download import download_movielens_1m
 from facter.data.movielens import load_ml1m, build_item_db
@@ -19,12 +20,12 @@ from facter.models.hf_generator import HFOpenGenerator, HFGenConfig
 from facter.models.hf_ranker import HFChatRanker, HFChatRankerConfig
 from facter.prompting.repair import PromptRepairConfig, PromptRepairEngine
 from facter.eval.metrics import mean_recall_ndcg
-from facter.eval.baselines import evaluate_zero_shot, run_zero_shot_ranking
+from facter.eval.baselines import evaluate_zero_shot, run_zero_shot
 from facter.eval.counterfactual import compute_cfr, CFRConfig
 from facter.tracking.mlflow import MLflowConfig, start_run, log_params, log_metrics, log_text, log_dataframe
 from facter.utils.seeding import seed_all, SeedConfig
 from facter.data.prompts import PromptConfig
-
+from facter.eval.catalogue_map import CatalogMapper
 
 def _read_split(processed_dir: Path, split: str) -> pd.DataFrame:
     path = processed_dir / split / "dataset.jsonl"
@@ -145,7 +146,7 @@ def main() -> None:
                     title_to_mid[_norm_title(title)] = int(mid)
 
         with stage("init_models", timings):
-            embedder = TextEmbedder(EmbedderConfig(device=device))            
+            embedder = TextEmbedder(EmbedderConfig(model_name="JJTsao/fine-tuned_movie_retriever-all-mpnet-base-v2", device=device))       
             ranker = HFChatRanker(HFChatRankerConfig(model_id=args.model_id))
             
             generator = None
@@ -157,7 +158,7 @@ def main() -> None:
                 )
 
         with stage("init_facter_components", timings):
-            ctx = ContextEncoder(embedder, ContextEncodingConfig(max_history_items=5))
+            ctx = ContextEncoder(embedder, ContextEncodingConfig(max_history_items=10))
             protected_cols = (args.protected_attr,)
 
             off_cfg = OfflineCalibConfig(
@@ -196,6 +197,12 @@ def main() -> None:
             prompt_cfg = PromptConfig(k_recs=args.k)
             cfr_cfg = CFRConfig(flip_attr=args.cfr_flip_attr, k=args.k)
 
+            catalog_mapper = CatalogMapper(
+                embedder=embedder, item_db=item_db, title_key="title"
+            )
+            catalog_mapper.build(dedup=True)
+            log_metrics({"catalog.items_n": float(len(catalog_mapper.catalog_titles))})
+
         with stage("offline_calibration", timings):
             cal_res = calibrator.run(
                 cal_df=cal_df,
@@ -205,6 +212,7 @@ def main() -> None:
                 predict_mode=args.predict_mode,
                 generator=generator,
                 prompt_cfg=prompt_cfg,
+                catalog_mapper=catalog_mapper,
             )
             log_metrics({
                 "offline.q_alpha0": float(cal_res.q_alpha0),
@@ -222,24 +230,39 @@ def main() -> None:
             )
 
         with stage("baseline_zero_shot", timings):
-            # Baseline is ALWAYS ranking (per your requirement).
-            baseline_df = run_zero_shot_ranking(
-                test_df.copy(), ranker, k=args.k, system_prompt=None, progress=args.progress
+            baseline_df = run_zero_shot(
+            test_df.copy(),
+            ranker=ranker if args.predict_mode == "rank" else None,
+            generator=generator if args.predict_mode == "open" else None,
+            item_db=item_db,
+            predict_mode=args.predict_mode,
+            k=args.k,
+            catalog_mapper=catalog_mapper,
+            title_to_mid=title_to_mid,
+            progress=args.progress,
             )
 
-            baseline_metrics = evaluate_zero_shot(
-                baseline_df, ranker, k=args.k, progress=args.progress
-            )
+            baseline_metrics = evaluate_zero_shot(baseline_df, k=args.k)
 
-            baseline_cfr = compute_cfr(
-                df=baseline_df,
-                ranker=ranker,
-                embedder=embedder,
-                item_db=item_db,
-                prompt_cfg=prompt_cfg,
-                cfg=cfr_cfg,
-                iter=None,
-            )
+            # CFR for baseline (supports both rank and open modes)
+            cfr_kwargs = {
+                "df": baseline_df,
+                "embedder": embedder,
+                "item_db": item_db,
+                "prompt_cfg": prompt_cfg,
+                "cfg": cfr_cfg,
+                "predict_mode": args.predict_mode,
+                "iter": None,
+            }
+            
+            if args.predict_mode == "rank":
+                cfr_kwargs["ranker"] = ranker
+            elif args.predict_mode == "open":
+                cfr_kwargs["generator"] = generator
+                cfr_kwargs["catalog_mapper"] = catalog_mapper
+                cfr_kwargs["title_to_mid"] = title_to_mid
+
+            baseline_cfr = compute_cfr(**cfr_kwargs)
             baseline_metrics[f"CFR_{args.cfr_flip_attr}"] = float(baseline_cfr)
             log_metrics({f"baseline.{k}": v for k, v in baseline_metrics.items()})
             log_dataframe(baseline_df, "data/baseline_df.json", format="json")
@@ -283,19 +306,24 @@ def main() -> None:
                 facter_metrics[f"iter{it}.Recall{args.k}"] = m[f"Recall@{args.k}"]
                 facter_metrics[f"iter{it}.NDCG{args.k}"] = m[f"NDCG@{args.k}"]
 
-                # CFR remains rank-based in this implementation; if you want CFR for open mode,
-                # we should implement an open-mode CFR function that calls the generator.
+                # CFR for online monitor (supports both rank and open modes)
+                cfr_kwargs = {
+                    "df": out_df,
+                    "embedder": embedder,
+                    "item_db": item_db,
+                    "prompt_cfg": prompt_cfg,
+                    "cfg": cfr_cfg,
+                    "predict_mode": args.predict_mode,
+                    "iter": it,
+                }
                 if args.predict_mode == "rank":
-                    cfr_metric = compute_cfr(
-                        df=out_df,
-                        ranker=ranker,
-                        embedder=embedder,
-                        item_db=item_db,
-                        prompt_cfg=prompt_cfg,
-                        cfg=cfr_cfg,
-                        iter=it,
-                    )
-                    facter_metrics[f"iter{it}.CFR_{args.cfr_flip_attr}"] = float(cfr_metric)
+                    cfr_kwargs["ranker"] = ranker
+                elif args.predict_mode == "open":
+                    cfr_kwargs["generator"] = generator
+                    cfr_kwargs["catalog_mapper"] = catalog_mapper
+                    cfr_kwargs["title_to_mid"] = title_to_mid
+                cfr_metric = compute_cfr(**cfr_kwargs)
+                facter_metrics[f"iter{it}.CFR_{args.cfr_flip_attr}"] = float(cfr_metric)
 
             log_metrics(facter_metrics)
             log_text(json.dumps({"baseline": baseline_metrics, "facter": facter_metrics}, indent=2), "results/summary.json")
