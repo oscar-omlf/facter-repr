@@ -5,6 +5,8 @@ from typing import List, Sequence, Optional
 
 from pathlib import Path
 
+from tqdm import tqdm
+
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
@@ -29,8 +31,7 @@ def parse_json_list(text: str, k: int) -> List[str]:
     if not text:
         return []
 
-    # 1. Pre-process to handle common LLM "JSON-ish" errors
-    # Replace smart quotes with standard quotes
+    # 1. Pre-process (Smart Quotes)
     sanitized_text = (
         text.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
     )
@@ -39,7 +40,6 @@ def parse_json_list(text: str, k: int) -> List[str]:
     m = re.search(r"\[[\s\S]*\]", sanitized_text)
     if m:
         json_str = m.group(0)
-        # Remove trailing commas before a closing bracket (common LLM error)
         json_str = re.sub(r",\s*\]", "]", json_str)
         try:
             arr = json.loads(json_str)
@@ -54,30 +54,34 @@ def parse_json_list(text: str, k: int) -> List[str]:
                     if len(out) >= k:
                         break
                 return out
-        except Exception as e:
-            pass  # fall through to next parsing attempt
+        except Exception:
+            pass 
 
     # 3. Improved Fallback Parse
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     out = []
     seen = set()
 
-    # Common conversational prefixes to ignore
+    # ADD "assistant" and "user" to ignore patterns
     ignore_patterns = [
-        r"based on",
-        r"here is",
-        r"here're",
-        r"recommended",
-        r"note that",
+        r"based on", r"here is", r"here're", r"recommended", 
+        r"note that", r"^assistant$", r"^user$", r"^system$"
     ]
 
     for ln in lines:
-        # Clean bullets/numbers
-        clean_ln = re.sub(r"^\s*[\-\*\d\.\)\:\[\]]+\s*", "", ln).strip()
-        # Remove wrapping quotes if they exist
-        clean_ln = clean_ln.strip('"').strip("'")
+        # 1. Skip Markdown code fences and JSON structural brackets
+        if '```' in ln or ln.strip() in ['[', ']', '],', '],']:
+            continue
 
-        # Skip if line is empty, too long (likely a sentence), or matches ignore list
+        # 2. Clean bullets, numbers, and leading/trailing brackets/braces
+        # This regex now also targets leading [ or { if they are part of the line
+        clean_ln = re.sub(r"^\s*[\-\*\d\.\)\:\[\]\{\}]+\s*", "", ln).strip()
+        
+        # 3. Clean up trailing artifacts from the JSON-like format
+        # This removes trailing commas, closing brackets, and quotes
+        clean_ln = clean_ln.rstrip(',').rstrip(']').rstrip('}').strip('"').strip("'")
+
+        # 4. Skip if line is empty, too long, or matches ignore list
         if not clean_ln or len(clean_ln) > 100:
             continue
         if any(re.search(p, clean_ln, re.I) for p in ignore_patterns):
@@ -130,6 +134,7 @@ class HFOpenGenerator:
         prompts: Sequence[str],
         system_prompts: Sequence[Optional[str]],
         k: int,
+        progress: bool = False,
     ) -> List[List[str]]:
         if len(prompts) != len(system_prompts):
             raise ValueError("prompts and system_prompts must have the same length")
@@ -142,10 +147,16 @@ class HFOpenGenerator:
             return list(obj["json_list"])
 
         out_all: List[List[str]] = []
+        generated_content_list: List[str] = []
         device = self.model.device
         do_sample = self.cfg.temperature > 0.0
 
-        for i in range(0, len(prompts), self.cfg.batch_size):
+        if progress:
+            it = tqdm(range(0, len(prompts), self.cfg.batch_size), total=(len(prompts) + self.cfg.batch_size - 1) // self.cfg.batch_size, desc="HFGen: generate")
+        else:
+            it = range(0, len(prompts), self.cfg.batch_size)
+
+        for i in it:
             batch_prompts = list(prompts[i : i + self.cfg.batch_size])
             batch_systems = list(system_prompts[i : i + self.cfg.batch_size])
 
@@ -184,12 +195,15 @@ class HFOpenGenerator:
                 txt = self.tokenizer.decode(cont, skip_special_tokens=True)
 
                 json_list = parse_json_list(txt, k)
+
                 print(f"Generated text (prompt): {txt}")
                 print(f"Parsed list: {json_list}")
+
                 out_all.append(json_list)
+                generated_content_list.append(txt)
 
         cpath.write_text(
-            json.dumps({"json_list": out_all, 'generated_content': txt}, ensure_ascii=False, indent=2),
+            json.dumps({"json_list": out_all, 'generated_content': generated_content_list}, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
