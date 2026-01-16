@@ -55,7 +55,7 @@ class PromptRepairEngine:
         self.item_db = item_db
         self.buffer = ViolationBuffer(cfg)
 
-    def _extract_features_movielens(self, mid: str) -> Tuple[str, Tuple[str, ...]]:
+    def _extract_features(self, mid: str) -> Tuple[str, Tuple[str, ...]]:
         info = self.item_db.get(str(mid), {})
         title = info.get("title", f"UNKNOWN_ITEM_{mid}")
         genres_str = info.get("genres", "")
@@ -80,7 +80,7 @@ class PromptRepairEngine:
                 title-only with empty genre features.
         """
         if pred_mid is not None and str(pred_mid) in self.item_db:
-            title, genres = self._extract_features_movielens(str(pred_mid))
+            title, genres = self._extract_features(str(pred_mid))
             self.buffer.add(
                 ViolationEntry(
                     a_value=str(protected_value),
