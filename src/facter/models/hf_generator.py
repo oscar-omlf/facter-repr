@@ -1,10 +1,9 @@
 import hashlib
-import pathlib
 import json, re
 from dataclasses import dataclass
 from typing import List, Sequence, Optional
 
-from anyio import Path
+from pathlib import Path
 
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -26,33 +25,71 @@ class HFGenConfig:
     device_map: str = "auto"        # passed to transformers
     trust_remote_code: bool = False
 
-
 def parse_json_list(text: str, k: int) -> List[str]:
     if not text:
         return []
-    m = re.search(r"\[[\s\S]*\]", text)
+
+    # 1. Pre-process to handle common LLM "JSON-ish" errors
+    # Replace smart quotes with standard quotes
+    sanitized_text = (
+        text.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+    )
+
+    # 2. Try JSON array extraction
+    m = re.search(r"\[[\s\S]*\]", sanitized_text)
     if m:
+        json_str = m.group(0)
+        # Remove trailing commas before a closing bracket (common LLM error)
+        json_str = re.sub(r",\s*\]", "]", json_str)
         try:
-            arr = json.loads(m.group(0))
+            arr = json.loads(json_str)
             if isinstance(arr, list):
                 out = []
                 seen = set()
                 for x in arr:
-                    s = str(x).strip()
-                    if s and s not in seen:
-                        out.append(s); seen.add(s)
-                    if len(out) >= k: break
+                    val = str(x).strip()
+                    if val and val not in seen:
+                        out.append(val)
+                        seen.add(val)
+                    if len(out) >= k:
+                        break
                 return out
-        except Exception:
-            pass
-    # fallback: parse lines
+        except Exception as e:
+            pass  # fall through to next parsing attempt
+
+    # 3. Improved Fallback Parse
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     out = []
+    seen = set()
+
+    # Common conversational prefixes to ignore
+    ignore_patterns = [
+        r"based on",
+        r"here is",
+        r"here're",
+        r"recommended",
+        r"note that",
+    ]
+
     for ln in lines:
-        ln = re.sub(r"^\s*[\-\*\d\.\)\:]+\s*", "", ln).strip()
-        if ln:
-            out.append(ln)
-        if len(out) >= k: break
+        # Clean bullets/numbers
+        clean_ln = re.sub(r"^\s*[\-\*\d\.\)\:\[\]]+\s*", "", ln).strip()
+        # Remove wrapping quotes if they exist
+        clean_ln = clean_ln.strip('"').strip("'")
+
+        # Skip if line is empty, too long (likely a sentence), or matches ignore list
+        if not clean_ln or len(clean_ln) > 100:
+            continue
+        if any(re.search(p, clean_ln, re.I) for p in ignore_patterns):
+            continue
+
+        if clean_ln not in seen:
+            out.append(clean_ln)
+            seen.add(clean_ln)
+
+        if len(out) >= k:
+            break
+
     return out
 
 
@@ -99,10 +136,9 @@ class HFOpenGenerator:
         
         key = self._cache_key(prompts, system_prompts)
         cpath = self._cache_path(key)
-        sync_path = pathlib.Path(str(cpath))
         
-        if sync_path.exists():
-            obj = json.loads(sync_path.read_text(encoding="utf-8"))
+        if cpath.exists():
+            obj = json.loads(cpath.read_text(encoding="utf-8"))
             return list(obj["json_list"])
 
         out_all: List[List[str]] = []
@@ -153,7 +189,7 @@ class HFOpenGenerator:
                 out_all.append(json_list)
 
         cpath.write_text(
-            json.dumps({"json_list": out_all}, ensure_ascii=False, indent=2),
+            json.dumps({"json_list": out_all, 'generated_content': txt}, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
