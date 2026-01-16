@@ -332,6 +332,8 @@ def main() -> None:
                 generator=generator,
                 prompt_cfg=prompt_cfg,
                 title_to_mid=title_to_mid if args.predict_mode == "open" else None,
+                catalog_mapper=catalog_mapper if args.predict_mode == "open" else None,
+                min_sim=0.65,
             )
 
             for it_log in logs:

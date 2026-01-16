@@ -7,7 +7,7 @@ import pandas as pd
 
 @dataclass(frozen=True)
 class ProtocolConfig:
-    min_history: int = 5          # how many history items before predicting next
+    min_history: int = 10          # how many history items before predicting next
     sample_interactions: int = 2500
     test_size: float = 0.30
     seed: int = 42
@@ -21,6 +21,7 @@ def build_interactions_ml(
     users: pd.DataFrame,
     item_db: Dict[int, Dict[str, str]],
     cfg: ProtocolConfig,
+    filter_ratings: bool = False,
 ) -> pd.DataFrame:
     """
     Build interaction rows:
@@ -31,6 +32,9 @@ def build_interactions_ml(
     For each user, sort by timestamp. For each position t, if t >= min_history,
     history = previous min_history items, target = current item.
     """
+    if filter_ratings:
+        ratings = ratings[ratings["rating"] >= 4.0].reset_index(drop=True)
+
     # Merge + sort
     df = ratings.merge(users, on="uid", how="inner")
     df = df.sort_values(["uid", "timestamp"]).reset_index(drop=True)
