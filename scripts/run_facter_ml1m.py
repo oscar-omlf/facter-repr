@@ -7,7 +7,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from sentence_transformers import SentenceTransformer
 
 from facter.data.download import download_movielens_1m
 from facter.data.movielens import load_ml1m, build_item_db
@@ -19,7 +18,7 @@ from facter.models.embedder import EmbedderConfig, TextEmbedder
 from facter.models.hf_generator import HFOpenGenerator, HFGenConfig
 from facter.models.hf_ranker import HFChatRanker, HFChatRankerConfig
 from facter.prompting.repair import PromptRepairConfig, PromptRepairEngine
-from facter.eval.metrics import mean_recall_ndcg
+from facter.eval.metrics import mean_recall_ndcg, snsr_snsv_proxy_from_title_lists, snsr_snsv_proxy_from_mid_lists
 from facter.eval.baselines import evaluate_zero_shot, run_zero_shot
 from facter.eval.counterfactual import compute_cfr, CFRConfig
 from facter.tracking.mlflow import MLflowConfig, start_run, log_params, log_metrics, log_text, log_dataframe
@@ -278,6 +277,47 @@ def main() -> None:
 
             baseline_cfr = compute_cfr(**cfr_kwargs)
             baseline_metrics[f"CFR_{args.cfr_flip_attr}"] = float(baseline_cfr)
+            
+            # Compute SNSR/SNSV fairness metrics for baseline
+            group_keys = baseline_df.apply(
+                lambda row: "|".join(f"{col}={row[col]}" for col in protected_cols),
+                axis=1,
+            ).tolist()
+            
+            if args.predict_mode == "rank":
+                # Use ranked_mids for rank mode
+                sns_metrics = snsr_snsv_proxy_from_mid_lists(
+                    rec_mid_lists=baseline_df["ranked_mids"].tolist(),
+                    group_keys=group_keys,
+                    embedder=embedder,
+                    item_db=item_db,
+                    k=args.k,
+                    min_group_size=30,
+                )
+            else:
+                # Use generated_titles for open mode
+                if "generator_response" in baseline_df.columns:
+                    title_lists = []
+                    for resp in baseline_df["generator_response"]:
+                        try:
+                            titles = json.loads(resp) if isinstance(resp, str) else resp
+                            title_lists.append(titles if isinstance(titles, list) else [])
+                        except:
+                            title_lists.append([])
+                    sns_metrics = snsr_snsv_proxy_from_title_lists(
+                        rec_title_lists=title_lists,
+                        group_keys=group_keys,
+                        embedder=embedder,
+                        k=args.k,
+                        min_group_size=30,
+                    )
+                else:
+                    sns_metrics = None
+            
+            if sns_metrics:
+                baseline_metrics["SNSR"] = float(sns_metrics.SNSR)
+                baseline_metrics["SNSV"] = float(sns_metrics.SNSV)
+            
             log_metrics({f"baseline.{k}": v for k, v in baseline_metrics.items()})
             log_dataframe(baseline_df, "data/baseline_df.json", format="json")
 
@@ -323,6 +363,35 @@ def main() -> None:
                 facter_metrics[f"iter{it}.violations"] = float(v)
                 facter_metrics[f"iter{it}.Recall{args.k}"] = m[f"Recall@{args.k}"]
                 facter_metrics[f"iter{it}.NDCG{args.k}"] = m[f"NDCG@{args.k}"]
+                
+                # Compute SNSR/SNSV fairness metrics for this iteration
+                if args.predict_mode == "rank":
+                    # Use ranked_mids for rank mode
+                    sns_metrics = snsr_snsv_proxy_from_mid_lists(
+                        rec_mid_lists=out_df[f"ranked_mids_iter{it}"].tolist(),
+                        group_keys=group_keys,
+                        embedder=embedder,
+                        item_db=item_db,
+                        k=args.k,
+                        min_group_size=30,
+                    )
+                else:
+                    # Use generated_titles for open mode
+                    if f"generated_titles_iter{it}" in out_df.columns:
+                        title_lists = out_df[f"generated_titles_iter{it}"].tolist()
+                        sns_metrics = snsr_snsv_proxy_from_title_lists(
+                            rec_title_lists=title_lists,
+                            group_keys=group_keys,
+                            embedder=embedder,
+                            k=args.k,
+                            min_group_size=30,
+                        )
+                    else:
+                        sns_metrics = None
+                
+                if sns_metrics:
+                    facter_metrics[f"iter{it}.SNSR"] = float(sns_metrics.SNSR)
+                    facter_metrics[f"iter{it}.SNSV"] = float(sns_metrics.SNSV)
 
                 # In open mode, track fraction of generated titles mapped to catalog per iteration
                 if args.predict_mode == "open":
