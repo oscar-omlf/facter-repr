@@ -46,7 +46,8 @@ python scripts/download_data.py --dataset ml-1m
 ### Build the processed split + prompts
 This produces a deterministic sample of interactions, then a 70/30 calibration/test split, then per-row prompts.
 ```bash
-python scripts/build_ml1m_dataset.py \
+python scripts/build_dataset.py \
+  --dataset ml-1m \
   --seed 42 \
   --n 2500 \
   --n_candidates 100
@@ -61,7 +62,7 @@ Outputs:
 ### End-to-end FACTER (offline + online)
 You must provide a Hugging Face `model_id` for the LLM ranker. Example:
 ```bash
-python scripts/run_facter_ml1m.py \
+python scripts/run_facter.py \
   --model_id meta-llama/Meta-Llama-3.1-8B \
   --seed 42 \
   --protected_attr gender \
@@ -74,7 +75,7 @@ This will:
 - run offline conformal calibration to compute Q_alpha^(0),
 - run online iterations with violation-triggered prompt repair + threshold update,
 - log results to MLflow (default: `sqlite:///./mlflow.db`),
-- save a per-example table to `data/processed/ml-1m/runs/*.parquet`.
+- save a per-example table to `data/processed/{dataset}/runs/*.parquet`.
 
 ### Hyperparameters (paper defaults):
 The default values I am using (TODO: Triple check):
