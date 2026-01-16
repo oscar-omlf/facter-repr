@@ -8,13 +8,13 @@ class Ranker(Protocol):
 
     rank() returns a permutation of candidate indices (0..len(candidates)-1) from best to worst.
     """
+
     def rank(
         self,
         prompt_rank: str,
         candidate_titles: Sequence[str],
         system_prompt: str | None = None,
-    ) -> List[int]:
-        ...
+    ) -> List[int]: ...
 
 
 @dataclass(frozen=True)

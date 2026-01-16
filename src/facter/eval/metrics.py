@@ -1,10 +1,11 @@
-from dataclasses import dataclass
-from typing import Iterable, List, Sequence, Set
+from typing import Sequence, Set
 
 import numpy as np
 
 
-def recall_at_k(ranked_items: Sequence[int], relevant_items: Set[int], k: int = 10) -> float:
+def recall_at_k(
+    ranked_items: Sequence[str], relevant_items: Set[str], k: int = 10
+) -> float:
     """
     Recall@K: |TopK ∩ Relevant| / |Relevant|
     For MovieLens next-item prediction, |Relevant| is usually 1.
@@ -14,11 +15,13 @@ def recall_at_k(ranked_items: Sequence[int], relevant_items: Set[int], k: int = 
     if len(relevant_items) == 0:
         return 0.0
     topk = ranked_items[:k]
-    hits = sum(1 for x in topk if int(x) in relevant_items)
+    hits = sum(1 for x in topk if str(x) in relevant_items)
     return float(hits) / float(len(relevant_items))
 
 
-def ndcg_at_k(ranked_items: Sequence[int], relevant_items: Set[int], k: int = 10) -> float:
+def ndcg_at_k(
+    ranked_items: Sequence[str], relevant_items: Set[str], k: int = 10
+) -> float:
     """
     NDCG@K with binary relevance:
       DCG = sum_{i=1..K} rel_i / log2(i+1)
@@ -32,7 +35,7 @@ def ndcg_at_k(ranked_items: Sequence[int], relevant_items: Set[int], k: int = 10
 
     dcg = 0.0
     for rank, item in enumerate(ranked_items[:k], start=1):
-        rel = 1.0 if int(item) in relevant_items else 0.0
+        rel = 1.0 if str(item) in relevant_items else 0.0
         if rel > 0:
             dcg += rel / np.log2(rank + 1.0)
 
@@ -47,8 +50,8 @@ def ndcg_at_k(ranked_items: Sequence[int], relevant_items: Set[int], k: int = 10
 
 
 def mean_recall_ndcg(
-    ranked_lists: Sequence[Sequence[int]],
-    targets: Sequence[int],
+    ranked_lists: Sequence[Sequence[str]],
+    targets: Sequence[str],
     k: int = 10,
 ) -> dict:
     """
@@ -60,11 +63,14 @@ def mean_recall_ndcg(
     recalls = []
     ndcgs = []
     for ranked, tgt in zip(ranked_lists, targets):
-        rel = {int(tgt)}
+        rel = {str(tgt)}
         recalls.append(recall_at_k(ranked, rel, k=k))
         ndcgs.append(ndcg_at_k(ranked, rel, k=k))
 
-    return {"Recall@%d" % k: float(np.mean(recalls)), "NDCG@%d" % k: float(np.mean(ndcgs))}
+    return {
+        "Recall@%d" % k: float(np.mean(recalls)),
+        "NDCG@%d" % k: float(np.mean(ndcgs)),
+    }
 
 
 def count_violations(scores: Sequence[float], q_alpha: float) -> int:

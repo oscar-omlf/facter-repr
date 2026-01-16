@@ -1,9 +1,10 @@
-import json, re
+import json
+import re
 from dataclasses import dataclass
-from typing import List, Sequence, Optional
+from typing import List, Optional, Sequence
 
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
 @dataclass(frozen=True)
@@ -14,6 +15,7 @@ class HFGenConfig:
     top_p: float = 0.95
     repetition_penalty: float = 1.2
     batch_size: int = 8
+
 
 def parse_json_list(text: str, k: int) -> List[str]:
     if not text:
@@ -28,8 +30,10 @@ def parse_json_list(text: str, k: int) -> List[str]:
                 for x in arr:
                     s = str(x).strip()
                     if s and s not in seen:
-                        out.append(s); seen.add(s)
-                    if len(out) >= k: break
+                        out.append(s)
+                        seen.add(s)
+                    if len(out) >= k:
+                        break
                 return out
         except Exception:
             pass
@@ -40,14 +44,22 @@ def parse_json_list(text: str, k: int) -> List[str]:
         ln = re.sub(r"^\s*[\-\*\d\.\)\:]+\s*", "", ln).strip()
         if ln:
             out.append(ln)
-        if len(out) >= k: break
+        if len(out) >= k:
+            break
     return out
 
 
 class HFOpenGenerator:
-    def __init__(self, cfg: HFGenConfig, tokenizer: AutoTokenizer = None, model: AutoModelForCausalLM = None):
+    def __init__(
+        self,
+        cfg: HFGenConfig,
+        tokenizer: AutoTokenizer = None,
+        model: AutoModelForCausalLM = None,
+    ):
         self.cfg = cfg
-        self.tokenizer = tokenizer or AutoTokenizer.from_pretrained(cfg.model_id, use_fast=True)
+        self.tokenizer = tokenizer or AutoTokenizer.from_pretrained(
+            cfg.model_id, use_fast=True
+        )
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 

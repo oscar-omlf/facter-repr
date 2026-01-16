@@ -1,25 +1,27 @@
+import json
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple, Any
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-import json
 from tqdm.auto import tqdm
 
 from facter.data.prompts import PromptConfig, build_open_prompt
+from facter.fairness.online import CalibrationArtifacts, OnlineScorer
+from facter.fairness.scoring import item_text
+from facter.fairness.threshold_update import update_threshold_theorem2
 from facter.models.generator import Generator
 from facter.models.ranker import Ranker
-from facter.fairness.online import OnlineScorer, CalibrationArtifacts
-from facter.fairness.threshold_update import update_threshold_theorem2
 from facter.prompting.repair import PromptRepairEngine
-from facter.fairness.scoring import item_text
 
 
 @dataclass(frozen=True)
 class OnlineMonitorConfig:
     max_iterations: int = 5
     gamma: float = 0.95
-    protected_key: str = "gender"  # which protected attribute to use for repair filtering
+    protected_key: str = (
+        "gender"  # which protected attribute to use for repair filtering
+    )
 
 
 @dataclass
@@ -54,14 +56,14 @@ class FACTEROnlineMonitor:
     def run(
         self,
         test_df: pd.DataFrame,
-        item_db: Dict[int, Dict[str, str]],
+        item_db: Dict[str, Dict[str, str]],
         cal_artifacts: CalibrationArtifacts,
         q_alpha0: float,
         progress: bool = False,
         predict_mode: str = "rank",  # "rank" | "open"
         generator: Optional[Generator] = None,
         prompt_cfg: Optional[PromptConfig] = None,
-        title_to_mid: Optional[Dict[str, int]] = None,
+        title_to_mid: Optional[Dict[str, str]] = None,
         catalog_mapper: Optional[Any] = None,
         min_sim: float = 0.65,
     ) -> Tuple[pd.DataFrame, list[OnlineIterationLog]]:
@@ -80,7 +82,7 @@ class FACTEROnlineMonitor:
 
         catalog_mapper is expected to expose:
           map_list(titles: List[str], k: int, min_sim: float) -> object with fields:
-            - mapped_mids: List[Optional[int]]
+            - mapped_mids: List[Optional[str]]
             - mapped_titles: List[str]
             - valid_at_k: float
         """
@@ -96,17 +98,21 @@ class FACTEROnlineMonitor:
         for t in range(1, self.cfg.max_iterations + 1):
             idx_iter = range(len(df))
             if progress:
-                idx_iter = tqdm(idx_iter, total=len(df), desc=f"Online iter {t}/{self.cfg.max_iterations}")
+                idx_iter = tqdm(
+                    idx_iter,
+                    total=len(df),
+                    desc=f"Online iter {t}/{self.cfg.max_iterations}",
+                )
 
             S_list: list[float] = []
             d_list: list[float] = []
             delta_list: list[float] = []
             viol = 0
 
-            preds: list[int] = []
-            ranked_mids_list: list[list[int]] = []
+            preds: list[str] = []
+            ranked_mids_list: list[list[str]] = []
             generated_titles_list: list[list[str]] = []
-            generated_mids_list: list[list[int]] = []
+            generated_mids_list: list[list[str]] = []
 
             # Open-mode diagnostics (optional but useful for matching their evaluation regime)
             valid_at_k_list: list[float] = []
@@ -127,19 +133,23 @@ class FACTEROnlineMonitor:
                 )
                 system_prompts_list.append(system_prompt)
 
-                pred_mid: int = -1
+                pred_mid: str = "-1"
                 pred_text: str = ""
 
                 if predict_mode == "rank":
                     # NOTE: this assumes your Ranker.rank returns (ranked_idx, raw_response).
                     ranked_idx, raw_response = self.ranker.rank(
-                        row["prompt_rank"], row["candidate_titles"], system_prompt=system_prompt
+                        row["prompt_rank"],
+                        row["candidate_titles"],
+                        system_prompt=system_prompt,
                     )
                     best_idx = ranked_idx[0]
-                    pred_mid = int(row["candidate_mids"][best_idx])
+                    pred_mid = str(row["candidate_mids"][best_idx])
                     preds.append(pred_mid)
 
-                    ranked_mids = [int(row["candidate_mids"][idx]) for idx in ranked_idx]
+                    ranked_mids = [
+                        str(row["candidate_mids"][idx]) for idx in ranked_idx
+                    ]
                     ranked_mids_list.append(ranked_mids)
 
                     model_responses_list.append(raw_response)
@@ -158,21 +168,31 @@ class FACTEROnlineMonitor:
 
                     # Call generator; prefer (prompts, system_prompt, k), fallback to (prompts, [system_prompt], k)
                     try:
-                        titles = generator.generate_topk([open_prompt], system_prompt, k=prompt_cfg.k_recs)[0]
+                        titles = generator.generate_topk(
+                            [open_prompt], system_prompt, k=prompt_cfg.k_recs
+                        )[0]
                     except TypeError:
-                        titles = generator.generate_topk([open_prompt], [system_prompt], k=prompt_cfg.k_recs)[0]
+                        titles = generator.generate_topk(
+                            [open_prompt], [system_prompt], k=prompt_cfg.k_recs
+                        )[0]
 
                     generated_titles_list.append(titles)
                     model_responses_list.append(json.dumps(titles, ensure_ascii=False))
 
-                    mids: list[int] = []
+                    mids: list[str] = []
                     valid_at_k = 0.0
 
                     # Preferred: embedding-based catalog mapping (authors' approach)
                     if catalog_mapper is not None:
-                        map_res = catalog_mapper.map_list(titles, k=prompt_cfg.k_recs, min_sim=min_sim)
+                        map_res = catalog_mapper.map_list(
+                            titles, k=prompt_cfg.k_recs, min_sim=min_sim
+                        )
                         # keep valid mapped mids in rank order
-                        mids = [int(m) for m in getattr(map_res, "mapped_mids", []) if m is not None]
+                        mids = [
+                            str(m)
+                            for m in getattr(map_res, "mapped_mids", [])
+                            if m is not None
+                        ]
                         valid_at_k = float(getattr(map_res, "valid_at_k", 0.0))
 
                         # use canonical mapped title for pred_text if available
@@ -186,12 +206,21 @@ class FACTEROnlineMonitor:
                     elif title_to_mid is not None:
                         for tt in titles:
                             key = str(tt).strip().lower()
-                            mid = title_to_mid.get(key, -1)
-                            if mid != -1 and int(mid) not in mids:
-                                mids.append(int(mid))
+                            mid = title_to_mid.get(key, "-1")
+                            if mid != "-1" and str(mid) not in mids:
+                                mids.append(str(mid))
                         # crude "valid@k" proxy under dict mapping
-                        valid_at_k = float(min(len(mids), prompt_cfg.k_recs)) / float(prompt_cfg.k_recs) if prompt_cfg.k_recs else 0.0
-                        pred_text = item_text(int(mids[0]), item_db) if mids else (titles[0] if titles else "UNKNOWN_GENERATION")
+                        valid_at_k = (
+                            float(min(len(mids), prompt_cfg.k_recs))
+                            / float(prompt_cfg.k_recs)
+                            if prompt_cfg.k_recs
+                            else 0.0
+                        )
+                        pred_text = (
+                            item_text(str(mids[0]), item_db)
+                            if mids
+                            else (titles[0] if titles else "UNKNOWN_GENERATION")
+                        )
 
                     else:
                         pred_text = titles[0] if titles else "UNKNOWN_GENERATION"
@@ -199,22 +228,22 @@ class FACTEROnlineMonitor:
                     generated_mids_list.append(mids)
                     valid_at_k_list.append(valid_at_k)
 
-                    pred_mid = mids[0] if mids else -1
-                    preds.append(int(pred_mid))
+                    pred_mid = mids[0] if mids else "-1"
+                    preds.append(str(pred_mid))
 
                     # For compatibility with existing metric code, we still populate ranked_mids_list
                     ranked_mids_list.append(mids)
 
-                    if pred_mid != -1 and not pred_text:
-                        pred_text = item_text(int(pred_mid), item_db)
+                    if pred_mid != "-1" and not pred_text:
+                        pred_text = item_text(str(pred_mid), item_db)
 
                 s, d, delta = self.scorer.score_one(
                     row=row,
-                    pred_mid=(pred_mid if pred_mid != -1 else None),
+                    pred_mid=(pred_mid if pred_mid != "-1" else None),
                     pred_text=pred_text,
                     item_db=item_db,
                     cal=cal_artifacts,
-                    target_mid=int(row["target_mid"]),
+                    target_mid=str(row["target_mid"]),
                 )
 
                 S_list.append(s)
@@ -226,10 +255,14 @@ class FACTEROnlineMonitor:
 
                 if is_violation:
                     viol += 1
-                    if pred_mid != -1:
-                        self.repair.add_violation(protected_value=a_value, pred_mid=pred_mid)
+                    if pred_mid != "-1":
+                        self.repair.add_violation(
+                            protected_value=a_value, pred_mid=pred_mid
+                        )
                     else:
-                        self.repair.add_violation(protected_value=a_value, pred_title=pred_text)
+                        self.repair.add_violation(
+                            protected_value=a_value, pred_title=pred_text
+                        )
 
                     q = update_threshold_theorem2(q_t=q, s_t=s, gamma=self.cfg.gamma)
 

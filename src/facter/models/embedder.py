@@ -41,11 +41,13 @@ class TextEmbedder:
         if self._manifest_path.exists():
             # Keep it simple; if corrupt, user can delete cache dir
             import json
+
             with self._manifest_path.open("r", encoding="utf-8") as f:
                 self._manifest = json.load(f)
 
     def _save_manifest(self) -> None:
         import json
+
         with self._manifest_path.open("w", encoding="utf-8") as f:
             json.dump(self._manifest, f, indent=2, sort_keys=True)
 

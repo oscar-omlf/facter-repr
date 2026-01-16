@@ -1,15 +1,15 @@
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
-from facter.models.embedder import TextEmbedder
 from facter.fairness.neighbors import CrossGroupNeighborIndex
+from facter.models.embedder import TextEmbedder
 
 
-def item_text(mid: int, item_db: Dict[int, Dict[str, str]]) -> str:
-    info = item_db.get(int(mid))
+def item_text(mid: str, item_db: Dict[str, Dict[str, str]]) -> str:
+    info = item_db.get(str(mid))
     if info is None:
         return f"UNKNOWN_ITEM_{mid}"
     title = info.get("title", f"UNKNOWN_ITEM_{mid}")
@@ -33,7 +33,7 @@ class NonconformityScorer:
         self,
         df: pd.DataFrame,
         pred_mid_col: Optional[str],
-        item_db: Dict[int, Dict[str, str]],
+        item_db: Dict[str, Dict[str, str]],
         neighbor_index: CrossGroupNeighborIndex,
         pred_text_col: Optional[str] = None,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -44,7 +44,7 @@ class NonconformityScorer:
 
         Returns: (S, d, delta, pred_emb)
         """
-        ref_mids = df["target_mid"].astype(int).tolist()
+        ref_mids = df["target_mid"].astype(str).tolist()
         ref_texts = [item_text(m, item_db) for m in ref_mids]
         ref_emb = self.embedder.encode_texts(ref_texts)  # [N,D]
 
@@ -52,8 +52,10 @@ class NonconformityScorer:
             pred_texts = df[pred_text_col].astype(str).tolist()
         else:
             if pred_mid_col is None:
-                raise ValueError("Either pred_mid_col or pred_text_col must be provided.")
-            pred_mids = df[pred_mid_col].astype(int).tolist()
+                raise ValueError(
+                    "Either pred_mid_col or pred_text_col must be provided."
+                )
+            pred_mids = df[pred_mid_col].astype(str).tolist()
             pred_texts = [item_text(m, item_db) for m in pred_mids]
 
         pred_emb = self.embedder.encode_texts(pred_texts)  # [N,D]

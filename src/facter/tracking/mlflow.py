@@ -1,11 +1,11 @@
 import os
-import re
 import platform
+import re
 import subprocess
 import tempfile
-from pathlib import Path
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
 
 import mlflow
@@ -24,12 +24,14 @@ def _sanitize_key(key: str) -> str:
     Allowed: alphanumerics, underscores (_), dashes (-), periods (.), spaces ( ), and slashes (/)
     """
     # This regex replaces any character NOT in the allowed set with an underscore
-    return re.sub(r'[^a-zA-Z0-9._\-\/ ]', '_', key)
+    return re.sub(r"[^a-zA-Z0-9._\-\/ ]", "_", key)
 
 
 def _get_git_commit() -> str:
     try:
-        out = subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL)
+        out = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL
+        )
         return out.decode("utf-8").strip()
     except Exception:
         return "UNKNOWN"
@@ -37,7 +39,9 @@ def _get_git_commit() -> str:
 
 def _get_git_dirty() -> str:
     try:
-        out = subprocess.check_output(["git", "status", "--porcelain"], stderr=subprocess.DEVNULL)
+        out = subprocess.check_output(
+            ["git", "status", "--porcelain"], stderr=subprocess.DEVNULL
+        )
         return "dirty" if out.strip() else "clean"
     except Exception:
         return "UNKNOWN"
@@ -49,7 +53,9 @@ def setup_mlflow(cfg: MLflowConfig) -> None:
 
 
 @contextmanager
-def start_run(cfg: MLflowConfig, tags: Optional[Dict[str, Any]] = None) -> Iterator[str]:
+def start_run(
+    cfg: MLflowConfig, tags: Optional[Dict[str, Any]] = None
+) -> Iterator[str]:
     """
     Context manager that starts an MLflow run and logs basic provenance.
     Returns the run_id.
@@ -75,10 +81,11 @@ def start_run(cfg: MLflowConfig, tags: Optional[Dict[str, Any]] = None) -> Itera
 def log_params(params: Dict[str, Any]) -> None:
     # Sanitize keys AND ensure values are MLflow-safe
     safe_params = {
-        _sanitize_key(k): (v if isinstance(v, (str, int, float, bool)) else str(v)) 
+        _sanitize_key(k): (v if isinstance(v, (str, int, float, bool)) else str(v))
         for k, v in params.items()
     }
     mlflow.log_params(safe_params)
+
 
 def log_metrics(metrics: Dict[str, float], step: Optional[int] = None) -> None:
     # Sanitize keys before logging
@@ -98,7 +105,7 @@ def log_text(text: str, artifact_path: str) -> None:
 def log_dataframe(df: Any, artifact_path: str, format: str = "parquet") -> None:
     """
     Log a pandas DataFrame as an artifact.
-    
+
     Args:
         df: pandas DataFrame to log
         artifact_path: Path where the artifact will be saved (e.g., 'data/calibration.parquet')
@@ -106,7 +113,7 @@ def log_dataframe(df: Any, artifact_path: str, format: str = "parquet") -> None:
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir) / Path(artifact_path).name
-        
+
         if format == "parquet":
             df.to_parquet(tmp_path, index=False)
         elif format == "csv":
@@ -114,6 +121,13 @@ def log_dataframe(df: Any, artifact_path: str, format: str = "parquet") -> None:
         elif format == "json":
             df.to_json(tmp_path, orient="records", lines=True)
         else:
-            raise ValueError(f"Unsupported format: {format}. Choose from 'parquet', 'csv', or 'json'.")
-        
-        mlflow.log_artifact(str(tmp_path), artifact_path=str(Path(artifact_path).parent) if Path(artifact_path).parent != Path(".") else None)
+            raise ValueError(
+                f"Unsupported format: {format}. Choose from 'parquet', 'csv', or 'json'."
+            )
+
+        mlflow.log_artifact(
+            str(tmp_path),
+            artifact_path=str(Path(artifact_path).parent)
+            if Path(artifact_path).parent != Path(".")
+            else None,
+        )

@@ -4,15 +4,19 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-from facter.data.prompts import AGE_ID2LABEL, OCC_ID2LABEL
-from facter.data.prompts import PromptConfig, build_ranking_prompt
+from facter.data.prompts import (
+    AGE_ID2LABEL,
+    OCC_ID2LABEL,
+    PromptConfig,
+    build_ranking_prompt,
+)
 from facter.fairness.scoring import item_text
 from facter.models.embedder import TextEmbedder
 from facter.models.ranker import Ranker
 
+_ML_AGE_BUCKETS = sorted(AGE_ID2LABEL.keys())  # [1, 18, 25, 35, 45, 50, 56]
+_ML_OCC_IDS = sorted(OCC_ID2LABEL.keys())  # [0..20]
 
-_ML_AGE_BUCKETS = sorted(AGE_ID2LABEL.keys())   # [1, 18, 25, 35, 45, 50, 56]
-_ML_OCC_IDS = sorted(OCC_ID2LABEL.keys())       # [0..20]
 
 @dataclass(frozen=True)
 class CFRConfig:
@@ -65,8 +69,10 @@ def flip_protected_value(attr: str, value) -> str:
     return str(value)
 
 
-def _embed_list_mean(embedder: TextEmbedder, mids: Sequence[int], item_db: Dict[int, Dict[str, str]]) -> np.ndarray:
-    texts = [item_text(int(m), item_db) for m in mids]
+def _embed_list_mean(
+    embedder: TextEmbedder, mids: Sequence[str], item_db: Dict[str, Dict[str, str]]
+) -> np.ndarray:
+    texts = [item_text(str(m), item_db) for m in mids]
     embs = embedder.encode_texts(texts)  # [K,D], normalized
     v = np.mean(embs, axis=0).astype(np.float32)
     # normalize mean vector to compare with cosine/dot
@@ -84,7 +90,7 @@ def compute_cfr(
     df: pd.DataFrame,
     ranker: Ranker,
     embedder: TextEmbedder,
-    item_db: Dict[int, Dict[str, str]],
+    item_db: Dict[str, Dict[str, str]],
     prompt_cfg: PromptConfig,
     cfg: CFRConfig,
     iter: Optional[int] = None,
@@ -101,11 +107,15 @@ def compute_cfr(
     for _, row in df.iterrows():
         cand_titles = row["candidate_titles"]
         prompt_orig = row["prompt_rank"]
-        system_prompt = row[f"system_prompt_iter{iter}" if iter is not None else "system_prompt"]
+        system_prompt = row[
+            f"system_prompt_iter{iter}" if iter is not None else "system_prompt"
+        ]
 
         # counterfactual prompt
         row_cf = row.to_dict()
-        row_cf[cfg.flip_attr] = flip_protected_value(cfg.flip_attr, row_cf[cfg.flip_attr])
+        row_cf[cfg.flip_attr] = flip_protected_value(
+            cfg.flip_attr, row_cf[cfg.flip_attr]
+        )
         prompt_cf = build_ranking_prompt(row_cf, cand_titles, prompt_cfg)
 
         idx_orig, _ = ranker.rank(prompt_orig, cand_titles, system_prompt=system_prompt)
@@ -113,12 +123,11 @@ def compute_cfr(
         idx_cf, _ = ranker.rank(prompt_cf, cand_titles, system_prompt=system_prompt)
         idx_cf = idx_cf[: cfg.k]
 
-        mids_orig = [int(row["candidate_mids"][i]) for i in idx_orig]
-        mids_cf = [int(row["candidate_mids"][i]) for i in idx_cf]
+        mids_orig = [str(row["candidate_mids"][i]) for i in idx_orig]
+        mids_cf = [str(row["candidate_mids"][i]) for i in idx_cf]
 
         v_orig = _embed_list_mean(embedder, mids_orig, item_db)
         v_cf = _embed_list_mean(embedder, mids_cf, item_db)
         dists.append(_l2_distance(v_orig, v_cf))
 
     return float(np.mean(dists)) if dists else 0.0
-

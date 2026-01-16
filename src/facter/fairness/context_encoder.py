@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Iterable, List, Sequence
+from typing import List, Sequence
 
 import numpy as np
 import pandas as pd
@@ -13,6 +13,7 @@ class ContextEncodingConfig:
     Enc(x): encode non-sensitive user context.
     For now: encode only history titles (no demographics).
     """
+
     max_history_items: int = 5
 
 
@@ -31,11 +32,12 @@ class ContextEncoder:
         lines.extend([f"- {t}" for t in hist])
         return "\n".join(lines)
 
-
     def encode_df(self, df: pd.DataFrame) -> np.ndarray:
         """
         df must include history_titles column (list[str]).
         Returns float32 array [N, D]. Assumes embedder returns normalized embeddings.
         """
-        texts: List[str] = [self._context_text(h) for h in df["history_titles"].tolist()]
+        texts: List[str] = [
+            self._context_text(h) for h in df["history_titles"].tolist()
+        ]
         return self.embedder.encode_texts(texts)

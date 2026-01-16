@@ -1,19 +1,19 @@
+import json
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-import json
 from tqdm.auto import tqdm
 
-from facter.data.prompts import PromptConfig, build_open_prompt
-from facter.models.ranker import Ranker
-from facter.models.embedder import TextEmbedder
-from facter.models.generator import Generator
+from facter.data.prompts import PromptConfig
+from facter.fairness.conformal import conformal_quantile
 from facter.fairness.context_encoder import ContextEncoder
 from facter.fairness.neighbors import CrossGroupNeighborIndex, NeighborConfig
 from facter.fairness.scoring import NonconformityScorer, ScoreConfig, item_text
-from facter.fairness.conformal import conformal_quantile
+from facter.models.embedder import TextEmbedder
+from facter.models.generator import Generator
+from facter.models.ranker import Ranker
 
 
 @dataclass(frozen=True)
@@ -61,10 +61,10 @@ class OfflineCalibrator:
 
     def _predict_top1_mid(
         self, row: pd.Series, system_prompt: Optional[str]
-    ) -> Tuple[int, List[int], str, List[int]]:
+    ) -> Tuple[str, List[str], str, List[int]]:
         """Returns (top1_mid, all_ranked_mids, raw_response, ranked_indices)"""
         candidates_titles: List[str] = row["candidate_titles"]
-        candidate_mids: List[int] = row["candidate_mids"]
+        candidate_mids: List[str] = row["candidate_mids"]
 
         # Get ranked indices from ranker
         ranked_idx, raw_response = self.ranker.rank(
@@ -72,14 +72,14 @@ class OfflineCalibrator:
         )
 
         best_idx = ranked_idx[0]
-        top1_mid = int(candidate_mids[best_idx])
+        top1_mid = str(candidate_mids[best_idx])
 
         return top1_mid, raw_response
 
     def run(
         self,
         cal_df: pd.DataFrame,
-        item_db: Dict[int, Dict[str, str]],
+        item_db: Dict[str, Dict[str, str]],
         system_prompt: Optional[str] = None,
         progress: bool = False,
         predict_mode: str = "rank",  # "rank" | "open"
@@ -106,7 +106,7 @@ class OfflineCalibrator:
         # 1) Enc(x)
         context_emb = self.context_encoder.encode_df(df)  # [N,D] normalized
 
-        pred_mids_list: list[int] = []
+        pred_mids_list: list[str] = []
         pred_texts_list: list[str] = []
         raw_responses_list: list[str] = []
 
@@ -119,8 +119,8 @@ class OfflineCalibrator:
                 top1_mid, raw_response = self._predict_top1_mid(
                     df.iloc[i], system_prompt
                 )
-                pred_mids_list.append(int(top1_mid))
-                pred_texts_list.append(item_text(int(top1_mid), item_db))
+                pred_mids_list.append(str(top1_mid))
+                pred_texts_list.append(item_text(str(top1_mid), item_db))
                 raw_responses_list.append(raw_response)
 
         elif predict_mode == "open":
@@ -138,19 +138,19 @@ class OfflineCalibrator:
 
             # Minimal title->mid mapping (exact match on item_db title)
             # You can replace this with the more robust normalization index used in the script.
-            title_to_mid: Dict[str, int] = {}
+            title_to_mid: Dict[str, str] = {}
             for mid, info in item_db.items():
-                title_to_mid[str(info.get("title", "")).strip().lower()] = int(mid)
+                title_to_mid[str(info.get("title", "")).strip().lower()] = str(mid)
 
             for titles in gen_lists:
                 top1_title = (titles[0] if titles else "").strip()
                 raw_responses_list.append(json.dumps(titles, ensure_ascii=False))
 
                 mid = title_to_mid.get(top1_title.lower(), -1)
-                pred_mids_list.append(int(mid))
+                pred_mids_list.append(str(mid))
 
                 if mid != -1:
-                    pred_texts_list.append(item_text(int(mid), item_db))
+                    pred_texts_list.append(item_text(str(mid), item_db))
                 else:
                     pred_texts_list.append(
                         top1_title if top1_title else "UNKNOWN_GENERATION"
@@ -159,7 +159,7 @@ class OfflineCalibrator:
         else:
             raise ValueError("predict_mode must be 'rank' or 'open'")
 
-        pred_mids = np.array(pred_mids_list, dtype=np.int64)
+        pred_mids = np.array(pred_mids_list, dtype=np.str_)
 
         # Store for logging / reuse
         df["system_prompt"] = system_prompt

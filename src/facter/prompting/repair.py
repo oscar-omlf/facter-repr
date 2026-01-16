@@ -1,7 +1,6 @@
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
-
 from collections import Counter, deque
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -12,17 +11,20 @@ class PromptRepairConfig:
     - match violations by same protected attribute value (one key)
     - if feature appears >=3 times, inject Avoid: (a)->feature-only
     """
+
     buffer_size: int = 50
-    protected_key: str = "gender"     # which protected attribute to filter by for pattern mining
-    min_feature_count: int = 3        # >=3 violations -> consistent pattern
-    max_rules: int = 5                # limit injected avoid rules
-    domain: str = "movielens"         # "movielens" | "amazon" (we implement movielens now)
+    protected_key: str = (
+        "gender"  # which protected attribute to filter by for pattern mining
+    )
+    min_feature_count: int = 3  # >=3 violations -> consistent pattern
+    max_rules: int = 5  # limit injected avoid rules
+    domain: str = "movielens"  # "movielens" | "amazon" (we implement movielens now)
 
 
 @dataclass(frozen=True)
 class ViolationEntry:
-    a_value: str                # value for protected_key, e.g. "F"
-    pred_mid: int               # predicted item id
+    a_value: str  # value for protected_key, e.g. "F"
+    pred_mid: str  # predicted item id
     pred_title: str
     pred_genres: Tuple[str, ...]
 
@@ -47,19 +49,29 @@ class PromptRepairEngine:
     Builds a system prompt I^(t) that injects “Avoid: (a) -> feature-only” rules.
     Paper Eq.(10) and protocol description in Section 3.3 stage 3.
     """
-    def __init__(self, cfg: PromptRepairConfig, item_db: Dict[int, Dict[str, str]]):
+
+    def __init__(self, cfg: PromptRepairConfig, item_db: Dict[str, Dict[str, str]]):
         self.cfg = cfg
         self.item_db = item_db
         self.buffer = ViolationBuffer(cfg)
 
-    def _extract_features_movielens(self, mid: int) -> Tuple[str, Tuple[str, ...]]:
-        info = self.item_db.get(int(mid), {})
+    def _extract_features_movielens(self, mid: str) -> Tuple[str, Tuple[str, ...]]:
+        info = self.item_db.get(str(mid), {})
         title = info.get("title", f"UNKNOWN_ITEM_{mid}")
         genres_str = info.get("genres", "")
-        genres = tuple([g.strip() for g in genres_str.split("|") if g.strip()]) if genres_str else tuple()
+        genres = (
+            tuple([g.strip() for g in genres_str.split("|") if g.strip()])
+            if genres_str
+            else tuple()
+        )
         return title, genres
 
-    def add_violation(self, protected_value: str, pred_mid: Optional[int] = None, pred_title: Optional[str] = None) -> None:
+    def add_violation(
+        self,
+        protected_value: str,
+        pred_mid: Optional[str] = None,
+        pred_title: Optional[str] = None,
+    ) -> None:
         """
         Record a violation in the FIFO buffer.
 
@@ -67,12 +79,12 @@ class PromptRepairEngine:
         Open mode: if pred_mid is unavailable or unmapped, supply pred_title and we store
                 title-only with empty genre features.
         """
-        if pred_mid is not None and int(pred_mid) in self.item_db:
-            title, genres = self._extract_features_movielens(int(pred_mid))
+        if pred_mid is not None and str(pred_mid) in self.item_db:
+            title, genres = self._extract_features_movielens(str(pred_mid))
             self.buffer.add(
                 ViolationEntry(
                     a_value=str(protected_value),
-                    pred_mid=int(pred_mid),
+                    pred_mid=str(pred_mid),
                     pred_title=title,
                     pred_genres=genres,
                 )
@@ -85,7 +97,7 @@ class PromptRepairEngine:
         self.buffer.add(
             ViolationEntry(
                 a_value=str(protected_value),
-                pred_mid=int(pred_mid) if pred_mid is not None else -1,
+                pred_mid=str(pred_mid) if pred_mid is not None else "-1",
                 pred_title=t,
                 pred_genres=tuple(),
             )
@@ -114,19 +126,29 @@ class PromptRepairEngine:
         # Rule priority: genre-only first, then exact title
         for genre, c in genre_counter.most_common():
             if c >= self.cfg.min_feature_count:
-                rules.append(f"Avoid: ({self.cfg.protected_key}={a_value}) -> ({genre}-only)")
+                rules.append(
+                    f"Avoid: ({self.cfg.protected_key}={a_value}) -> ({genre}-only)"
+                )
             if len(rules) >= self.cfg.max_rules:
                 return rules[: self.cfg.max_rules]
 
         for title, c in title_counter.most_common():
             if c >= self.cfg.min_feature_count:
-                rules.append(f"Avoid: ({self.cfg.protected_key}={a_value}) -> ({title})")
+                rules.append(
+                    f"Avoid: ({self.cfg.protected_key}={a_value}) -> ({title})"
+                )
             if len(rules) >= self.cfg.max_rules:
                 return rules[: self.cfg.max_rules]
 
         return rules[: self.cfg.max_rules]
 
-    def build_system_prompt(self, a_value: Optional[str], q_alpha: float, iteration: int, max_iterations: int) -> str:
+    def build_system_prompt(
+        self,
+        a_value: Optional[str],
+        q_alpha: float,
+        iteration: int,
+        max_iterations: int,
+    ) -> str:
         base = [
             "You are a fair recommendation system.",
             "Rank the candidates by relevance to the user's history, NOT demographics.",

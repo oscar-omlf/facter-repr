@@ -1,7 +1,7 @@
 import os
 import random
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import numpy as np
 import torch
@@ -11,7 +11,9 @@ import torch
 class SeedConfig:
     seed: int
     deterministic: bool = True
-    warn_only: bool = True  # if True, torch will warn instead of error for nondeterministic ops
+    warn_only: bool = (
+        True  # if True, torch will warn instead of error for nondeterministic ops
+    )
     disable_tf32: bool = True  # improves determinism across GPUs at some perf cost
 
 

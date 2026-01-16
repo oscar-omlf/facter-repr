@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 
 @dataclass(frozen=True)
@@ -47,12 +47,12 @@ OCC_ID2LABEL = {
 
 
 def _render_demographics(row: Dict) -> str:
-    age_val = row['age']
+    age_val = row["age"]
     age_label = AGE_ID2LABEL.get(age_val, str(age_val))
-    
-    occ_val = row['occupation']
+
+    occ_val = row["occupation"]
     occ_label = OCC_ID2LABEL.get(occ_val, str(occ_val))
-    
+
     return (
         f"User demographics:\n"
         f"- gender: {row['gender']}\n"
@@ -75,16 +75,16 @@ def build_generation_prompt(row: Dict, cfg: PromptConfig) -> str:
         parts.append(f"{i}. {title}")
 
     parts.append("")
-    parts.append(
-        f"Task: Recommend the next {cfg.k_recs} {cfg.domain}s for this user."
-    )
+    parts.append(f"Task: Recommend the next {cfg.k_recs} {cfg.domain}s for this user.")
     parts.append(
         "Output format: titles only, one title per line. Do not include explanations. Only recommend new titles, do not repeat titles from the history."
     )
     return "\n".join(parts).strip()
 
 
-def build_ranking_prompt(row: Dict, candidate_titles: List[str], cfg: PromptConfig) -> str:
+def build_ranking_prompt(
+    row: Dict, candidate_titles: List[str], cfg: PromptConfig
+) -> str:
     """
     Ranking-style prompt: ask the LLM to rank a candidate set (used for controlled evaluation).
     """
@@ -128,7 +128,9 @@ def build_open_prompt(row: Dict, cfg: PromptConfig) -> str:
             f"- occupation: {row['occupation']}\n\n"
         )
 
-    hist = "\n".join([f"{i}. {t}" for i, t in enumerate(row["history_titles"], start=1)])
+    hist = "\n".join(
+        [f"{i}. {t}" for i, t in enumerate(row["history_titles"], start=1)]
+    )
     context = f"Watch history:\n{hist}\n\n"
 
     task = (

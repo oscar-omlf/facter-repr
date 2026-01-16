@@ -10,15 +10,14 @@ Outputs:
 - mapped mids (optional if you have mid->title map)
 - Valid@K (fraction of mapped items that pass similarity threshold)
 """
+
 from __future__ import annotations
 
-from ast import pattern
 import logging
 import re
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
-import numpy as np
 import torch
 from sentence_transformers import util
 
@@ -56,7 +55,11 @@ def rewrite_prompt_attrs(prompt: str, new_attrs: Dict[str, str]) -> str:
         return out
 
     # Otherwise prepend a new block
-    profile = "User profile (audit only):\n" + "\n".join([f"- {k}: {v}" for k, v in new_attrs.items()]) + "\n\n"
+    profile = (
+        "User profile (audit only):\n"
+        + "\n".join([f"- {k}: {v}" for k, v in new_attrs.items()])
+        + "\n\n"
+    )
     return profile + out
 
 
@@ -124,7 +127,9 @@ class CatalogMapper:
         self._catalog_mids = mids
         self._catalog_titles = titles
 
-        logger.info(f"Building catalog embeddings for {len(self._catalog_titles)} items...")
+        logger.info(
+            f"Building catalog embeddings for {len(self._catalog_titles)} items..."
+        )
         self._catalog_embeds = self.embedder.encode(
             self._catalog_titles,
             convert_to_tensor=True,
@@ -132,7 +137,9 @@ class CatalogMapper:
             batch_size=self.batch_size,
         ).to(self.device)
 
-    def map_one(self, title: str, min_sim: float = 0.65) -> Tuple[Optional[str], Optional[str], float]:
+    def map_one(
+        self, title: str, min_sim: float = 0.65
+    ) -> Tuple[Optional[str], Optional[str], float]:
         """
         Map a single free-text title to (mid, catalog_title, sim).
         Returns (None, None, sim) if below threshold.
@@ -144,7 +151,9 @@ class CatalogMapper:
         if not title:
             return None, None, 0.0
 
-        q = self.embedder.encode(title, convert_to_tensor=True, show_progress_bar=False).to(self.device)
+        q = self.embedder.encode(
+            title, convert_to_tensor=True, show_progress_bar=False
+        ).to(self.device)
         sims = util.cos_sim(q.unsqueeze(0), self._catalog_embeds).squeeze(0)
         j = int(torch.argmax(sims).item())
         sim = float(sims[j].item())
@@ -192,4 +201,9 @@ class CatalogMapper:
                     valid += 1
 
         valid_at_k = float(valid) / float(k) if k > 0 else 0.0
-        return MapResult(mapped_titles=mapped_titles, mapped_mids=mapped_mids, sims=sims_out, valid_at_k=valid_at_k)
+        return MapResult(
+            mapped_titles=mapped_titles,
+            mapped_mids=mapped_mids,
+            sims=sims_out,
+            valid_at_k=valid_at_k,
+        )
