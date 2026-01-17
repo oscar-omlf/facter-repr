@@ -200,6 +200,7 @@ def compute_cfr(
 
     for _, row in rows.iterrows():
         base_prompt = row[prompt_col]
+        system_msg = row["system_msg"] if "system_msg" in row else system_msg_neutral
         if not isinstance(base_prompt, str) or not base_prompt.strip():
             continue
 
@@ -234,7 +235,7 @@ def compute_cfr(
         cf_prompt = rewrite_prompt_attrs(base_prompt, cf_attrs)
 
         # Generate for both
-        recs_pair = generate_fn([base_prompt, cf_prompt], system_msg_neutral)
+        recs_pair = generate_fn([base_prompt, cf_prompt], system_msg)
         if not (isinstance(recs_pair, list) and len(recs_pair) == 2):
             continue
         recs_a, recs_b = recs_pair[0], recs_pair[1]

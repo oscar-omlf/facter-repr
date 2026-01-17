@@ -263,6 +263,33 @@ class ConformalFairnessValidator:
             + (1.0 - Config.QUANTILE_DECAY) * s_new
         )
 
+    def check_violation(
+        self,
+        context: str,
+        attrs: Dict[str, str],
+        recs: List[str],
+        y_true_title: Optional[str] = None,
+    ) -> Tuple[bool, float, float]:
+        """
+        Check for violation WITHOUT updating threshold.
+        Returns (is_violation, S_new, current_threshold).
+        Use this for evaluation/analysis without affecting the adaptive threshold.
+        """
+        if self.adaptive_threshold is None:
+            raise RuntimeError("Validator must be calibrated before check_violation().")
+
+        group = _group_key(attrs)
+        yhat_title = recs[0] if recs else ""
+        s_new = self._score_S(
+            context=context,
+            group=group,
+            y_hat_title=yhat_title,
+            y_true_title=y_true_title,
+        )
+
+        is_violation = bool(s_new > float(self.adaptive_threshold))
+        return is_violation, float(s_new), float(self.adaptive_threshold)
+
     def validate(
         self,
         context: str,
@@ -275,19 +302,15 @@ class ConformalFairnessValidator:
         Returns (is_violation, S_new, current_threshold).
         On violation: stores violation + updates threshold.
         """
-        if self.adaptive_threshold is None:
-            raise RuntimeError("Validator must be calibrated before validate().")
+
+        is_violation, s_new, _ = self.check_violation(
+            context=context,    
+            attrs=attrs,
+            recs=recs,
+            y_true_title=y_true_title,
+            )
 
         group = _group_key(attrs)
-        yhat_title = recs[0] if recs else ""
-        s_new = self._score_S(
-            context=context,
-            group=group,
-            y_hat_title=yhat_title,
-            y_true_title=y_true_title,
-        )
-
-        is_violation = bool(s_new > float(self.adaptive_threshold))
         if is_violation:
             self.violation_count += 1
             feats = self._extract_features(recs)

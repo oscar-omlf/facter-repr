@@ -51,6 +51,7 @@ class Config:
     # History construction (paper-aligned: open-vocab “next item”)
     HISTORY_SIZE: int = 10
     MIN_SEQ_LENGTH: int = 5
+    N_DATAPOINTS = 2500
 
     # -------------------------
     # Fairness / conformal

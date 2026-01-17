@@ -74,7 +74,7 @@ class FairPromptEngine:
                 base.extend([f"- {r}" for r in sample])
 
         base.append(
-            f"Iteration: {self.iteration + 1}/{Config.MAX_NEW_TOKENS if hasattr(Config, 'MAX_NEW_TOKENS') else 5}"
+            f"Iteration: {self.iteration + 1}/{Config.MAX_ITERATIONS if hasattr(Config, 'MAX_ITERATIONS') else 5}"
         )
         return "\n".join(base)
 

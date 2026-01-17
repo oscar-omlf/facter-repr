@@ -206,9 +206,7 @@ def generate_recommendations(
         for txt in decoded:
             # extract generated part
             gen_part = txt.split("assistant")[-1].strip()
-            logger.info(gen_part)
             recs = parse_ranked_list(gen_part, Config.TOP_K_RECS)
-            logger.info(recs)
             all_recs.append(recs)
 
     # if any prompts were None, keep alignment by returning empty lists for them
