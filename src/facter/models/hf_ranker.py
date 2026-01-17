@@ -159,14 +159,10 @@ class HFChatRanker:
             cfg.model_id, use_fast=True, trust_remote_code=cfg.trust_remote_code
         )
 
-        max_memory_config = {
-            "cpu": "12GiB"  # <--- ADJUST THIS based on your computer's actual RAM
-        }
         self.model = AutoModelForCausalLM.from_pretrained(
             cfg.model_id,
             torch_dtype=torch_dtype,
             device_map=cfg.device_map,
-            max_memory=max_memory_config,
             trust_remote_code=cfg.trust_remote_code,
             offload_folder="offload",
         )
