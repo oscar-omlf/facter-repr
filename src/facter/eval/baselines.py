@@ -7,7 +7,7 @@ from facter.models.ranker import Ranker
 from facter.models.generator import Generator
 from facter.eval.metrics import mean_recall_ndcg
 from facter.eval.prediction import predict_batch_rank, predict_batch_open, build_title_to_mid_dict
-from facter.eval.catalogue_map import CatalogMapper
+from facter.eval.catalogue_map import CatalogueMapper
 from facter.data.prompts import PromptConfig
 
 
@@ -25,7 +25,7 @@ def run_zero_shot(
     k: int = 10,
     system_prompt: str | None = None,
     progress: bool = False,
-    catalogue_mapper: Optional[CatalogMapper] = None,
+    catalogue_mapper: Optional[CatalogueMapper] = None,
     title_to_mid: Optional[Dict[str, int]] = None,
     min_sim: float = 0.65,
 ) -> pd.DataFrame:
@@ -111,7 +111,7 @@ def run_zero_shot_generation(
     item_db: Dict[int, Dict[str, str]],
     k: int = 10,
     system_prompt: str | None = None,
-    catalogue_mapper: Optional[CatalogMapper] = None,
+    catalogue_mapper: Optional[CatalogueMapper] = None,
     title_to_mid: Optional[Dict[str, int]] = None,
     progress: bool = False,
     min_sim: float = 0.65,

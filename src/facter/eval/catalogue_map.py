@@ -66,7 +66,7 @@ class MapResult:
     valid_at_k: float
 
 
-class CatalogMapper:
+class CatalogueMapper:
     """
     Build an embedding index over catalog titles and map arbitrary strings to nearest neighbor.
     Uses the TextEmbedder class for consistent embedding behavior with caching.
@@ -129,7 +129,7 @@ class CatalogMapper:
         Returns (None, None, sim) if below threshold.
         """
         if self._catalog_embeds is None:
-            raise RuntimeError("CatalogMapper.build() must be called before mapping.")
+            raise RuntimeError("CatalogueMapper.build() must be called before mapping.")
 
         title = _normalize_title(title)
         if not title:

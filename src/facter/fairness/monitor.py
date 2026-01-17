@@ -62,6 +62,7 @@ class FACTEROnlineMonitor:
         prompt_cfg: Optional[PromptConfig] = None,
         title_to_mid: Optional[Dict[str, int]] = None,
         catalogue_mapper: Optional[Any] = None,
+        group_cols: Optional[Tuple[str, ...]] = None,
         min_sim: float = 0.65,
     ) -> Tuple[pd.DataFrame, list[OnlineIterationLog]]:
         """
@@ -116,7 +117,11 @@ class FACTEROnlineMonitor:
 
             for i in idx_iter:
                 row = df.iloc[i]
-                a_value = str(row[self.cfg.protected_key])
+                if group_cols:
+                    a_value = "|".join([f"{c}={row[c]}" for c in group_cols])
+                else:
+                    a_value = str(row[self.cfg.protected_key])
+
 
                 system_prompt = self.repair.build_system_prompt(
                     a_value=a_value,

@@ -6,7 +6,7 @@ import pandas as pd
 
 from facter.data.prompts import AGE_ID2LABEL, OCC_ID2LABEL
 from facter.data.prompts import PromptConfig, build_ranking_prompt, build_open_prompt
-from facter.eval.catalogue_map import CatalogMapper
+from facter.eval.catalogue_map import CatalogueMapper
 from facter.eval.prediction import build_title_to_mid_dict
 from facter.fairness.scoring import item_text
 from facter.models.embedder import TextEmbedder
@@ -92,7 +92,7 @@ def compute_cfr(
     predict_mode: str = "rank",  # "rank" | "open"
     ranker: Optional[Ranker] = None,
     generator: Optional[Generator] = None,
-    catalogue_mapper: Optional[CatalogMapper] = None,
+    catalogue_mapper: Optional[CatalogueMapper] = None,
     title_to_mid: Optional[Dict[str, int]] = None,
     min_sim: float = 0.65,
     iter: Optional[int] = None,

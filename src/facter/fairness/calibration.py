@@ -9,7 +9,7 @@ from facter.data.prompts import PromptConfig
 from facter.models.ranker import Ranker
 from facter.models.embedder import TextEmbedder
 from facter.models.generator import Generator
-from facter.eval.catalogue_map import CatalogMapper
+from facter.eval.catalogue_map import CatalogueMapper
 from facter.eval.prediction import predict_batch_rank, predict_batch_open, build_title_to_mid_dict
 from facter.fairness.context_encoder import ContextEncoder
 from facter.fairness.neighbors import CrossGroupNeighborIndex, NeighborConfig
@@ -69,7 +69,7 @@ class OfflineCalibrator:
         predict_mode: str = "rank",  # "rank" | "open"
         generator: Optional[Generator] = None,
         prompt_cfg: Optional[PromptConfig] = None,
-        catalogue_mapper: Optional[CatalogMapper] = None,
+        catalogue_mapper: Optional[CatalogueMapper] = None,
         min_sim: float = 0.65,
     ) -> OfflineCalibrationResult:
         """

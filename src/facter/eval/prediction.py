@@ -12,7 +12,7 @@ from tqdm.auto import tqdm
 
 from facter.models.ranker import Ranker
 from facter.models.generator import Generator
-from facter.eval.catalogue_map import CatalogMapper
+from facter.eval.catalogue_map import CatalogueMapper
 from facter.fairness.scoring import item_text
 from facter.data.prompts import PromptConfig, build_open_prompt
 
@@ -66,7 +66,7 @@ def predict_single_open(
     item_db: Dict[int, Dict[str, str]],
     prompt_cfg: PromptConfig,
     system_prompt: Optional[str] = None,
-    catalogue_mapper: Optional[CatalogMapper] = None,
+    catalogue_mapper: Optional[CatalogueMapper] = None,
     title_to_mid: Optional[Dict[str, int]] = None,
     min_sim: float = 0.65,
 ) -> PredictionResult:
@@ -189,7 +189,7 @@ def predict_batch_open(
     item_db: Dict[int, Dict[str, str]],
     prompt_cfg: PromptConfig,
     system_prompt: Optional[str] = None,
-    catalogue_mapper: Optional[CatalogMapper] = None,
+    catalogue_mapper: Optional[CatalogueMapper] = None,
     title_to_mid: Optional[Dict[str, int]] = None,
     min_sim: float = 0.65,
     progress: bool = False,
