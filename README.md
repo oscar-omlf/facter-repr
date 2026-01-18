@@ -62,11 +62,12 @@ Outputs:
 You must provide a Hugging Face `model_id` for the LLM ranker. Example:
 ```bash
 python scripts/run_facter_ml1m.py \
-  --model_id meta-llama/Meta-Llama-3.1-8B \
-  --seed 42 \
-  --protected_attr gender \
-  --max_iterations 3
-  --progress
+   --model_id meta-llama/Meta-Llama-3-8B-Instruct \
+   --seed 42 \
+   --protected_attrs gender,age,occupation \
+   --max_iterations 3 \
+   --progress \
+   --predict_mode open \
 ```
 
 This will:
