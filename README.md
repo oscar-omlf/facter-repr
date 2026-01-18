@@ -61,13 +61,14 @@ Outputs:
 ### End-to-end FACTER (offline + online)
 You must provide a Hugging Face `model_id` for the LLM ranker. Example:
 ```bash
-python scripts/run_facter_ml1m.py \
+python scripts/run_facter.py \
    --model_id meta-llama/Meta-Llama-3-8B-Instruct \
    --seed 42 \
    --protected_attrs gender,age,occupation \
    --max_iterations 3 \
    --progress \
    --predict_mode open \
+   --datasets ml-1m,amazon
 ```
 
 This will:
