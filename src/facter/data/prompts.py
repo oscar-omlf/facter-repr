@@ -121,12 +121,7 @@ def build_open_prompt(row: Dict, cfg: PromptConfig) -> str:
     """
     demo = ""
     if cfg.include_demographics:
-        demo = (
-            "User profile (audit only):\n"
-            f"- gender: {row['gender']}\n"
-            f"- age: {row['age']}\n"
-            f"- occupation: {row['occupation']}\n\n"
-        )
+        demo = _render_demographics(row) + "\n"
 
     hist = "\n".join([f"{i}. {t}" for i, t in enumerate(row["history_titles"], start=1)])
     context = f"Watch history:\n{hist}\n\n"

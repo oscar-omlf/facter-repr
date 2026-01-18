@@ -196,9 +196,6 @@ class HFOpenGenerator:
 
                 json_list = parse_json_list(txt, k)
 
-                print(f"Generated text (prompt): {txt}")
-                print(f"Parsed list: {json_list}")
-
                 out_all.append(json_list)
                 generated_content_list.append(txt)
 

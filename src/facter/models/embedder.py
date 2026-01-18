@@ -6,6 +6,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 from sentence_transformers import SentenceTransformer
+from tqdm import tqdm
 
 
 def _sha256_text(s: str) -> str:
@@ -16,9 +17,10 @@ def _sha256_text(s: str) -> str:
 class EmbedderConfig:
     model_name: str = "paraphrase-mpnet-base-v2"
     device: str = "cuda"  # "cuda" | "cpu"
-    batch_size: int = 64
+    batch_size: int = 512
     normalize: bool = True
     cache_dir: Path = Path("data/cache/embeddings")
+    progress: bool = False
 
 
 class TextEmbedder:
@@ -65,7 +67,7 @@ class TextEmbedder:
         missing_texts: List[str] = []
         missing_keys: List[str] = []
 
-        for t, k in zip(texts, keys):
+        for t, k in tqdm(zip(texts, keys), total=len(texts), desc="Loading cached embeddings", leave=False, disable=not self.cfg.progress):
             fname = self._manifest.get(k)
             if fname is None:
                 missing_texts.append(t)
@@ -88,10 +90,10 @@ class TextEmbedder:
                 batch_size=self.cfg.batch_size,
                 convert_to_numpy=True,
                 normalize_embeddings=self.cfg.normalize,
-                show_progress_bar=False,
+                show_progress_bar=self.cfg.progress,
             ).astype(np.float32)
 
-            for k, vec in zip(missing_keys, new_embs):
+            for k, vec in tqdm(zip(missing_keys, new_embs), total=len(missing_keys), desc="Caching new embeddings", leave=False, disable=not self.cfg.progress):
                 fname = f"{k}.npz"
                 fpath = self.cfg.cache_dir / fname
                 np.savez_compressed(fpath, emb=vec)

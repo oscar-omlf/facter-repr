@@ -105,7 +105,6 @@ class OfflineCalibrator:
             raise ValueError("predict_mode must be 'rank' or 'open'")
 
         pred_mids = np.array(pred_result.pred_mids, dtype=np.int64)
-        print(f"OfflineCalibrator: Predicted titles: {pred_result.pred_texts}")
 
         # Store for logging / reuse
         df["system_prompt"] = system_prompt
