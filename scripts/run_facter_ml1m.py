@@ -226,10 +226,10 @@ def main() -> None:
                     model=ranker.model,
                 )
 
-        with stage("build_catalog_mapper", timings):
-            catalog_mapper = CatalogueMapper(embedder=embedder, item_db=item_db, title_key="title")
-            catalog_mapper.build(dedup=True)
-            log_metrics({"catalog.items_n": float(len(catalog_mapper.catalog_titles))})
+        with stage("build_catalogue_mapper", timings):
+            catalogue_mapper = CatalogueMapper(embedder=embedder, item_db=item_db, title_key="title")
+            catalogue_mapper.build(dedup=True)
+            log_metrics({"catalog.items_n": float(len(catalogue_mapper.catalog_titles))})
 
         # Sweep over protected sets (single attrs and combinations)
         for protected_cols in protected_sets:
@@ -310,7 +310,7 @@ def main() -> None:
                     predict_mode=args.predict_mode,
                     generator=generator,
                     prompt_cfg=prompt_cfg,
-                    catalog_mapper=catalog_mapper,
+                    catalogue_mapper=catalogue_mapper,
                 )
                 log_metrics({
                     P("offline.q_alpha0"): float(cal_res.q_alpha0),
@@ -333,6 +333,12 @@ def main() -> None:
             )
 
             with stage(f"baseline_zero_shot[{pset}]", timings):
+                NEUTRAL_SYSTEM_PROMPT = (
+                "You are a helpful recommendation assistant.\n"
+                "Recommend items based on the user's watch history.\n"
+                f"Return ONLY a JSON array of exactly {args.k} item titles (strings), ranked best-first.\n"
+)
+
                 baseline_df = run_zero_shot(
                     test_df.copy(),
                     ranker=ranker if args.predict_mode == "rank" else None,
@@ -340,7 +346,7 @@ def main() -> None:
                     item_db=item_db,
                     predict_mode=args.predict_mode,
                     k=args.k,
-                    catalog_mapper=catalog_mapper,
+                    catalogue_mapper=catalogue_mapper,
                     title_to_mid=title_to_mid,
                     progress=args.progress,
                 )
@@ -386,7 +392,7 @@ def main() -> None:
                         cfr_kwargs["ranker"] = ranker
                     else:
                         cfr_kwargs["generator"] = generator
-                        cfr_kwargs["catalog_mapper"] = catalog_mapper
+                        cfr_kwargs["catalogue_mapper"] = catalogue_mapper
                         cfr_kwargs["title_to_mid"] = title_to_mid
 
                     baseline_metrics[f"CFR_{flip_attr}"] = float(compute_cfr(**cfr_kwargs))
@@ -406,7 +412,7 @@ def main() -> None:
                     generator=generator,
                     prompt_cfg=prompt_cfg,
                     title_to_mid=title_to_mid if args.predict_mode == "open" else None,
-                    catalog_mapper=catalog_mapper if args.predict_mode == "open" else None,
+                    catalogue_mapper=catalogue_mapper if args.predict_mode == "open" else None,
                     min_sim=0.65,
                     # IMPORTANT: requires your monitor.py to accept this param.
                     group_cols=protected_cols,
@@ -477,7 +483,7 @@ def main() -> None:
                             cfr_kwargs["ranker"] = ranker
                         else:
                             cfr_kwargs["generator"] = generator
-                            cfr_kwargs["catalog_mapper"] = catalog_mapper
+                            cfr_kwargs["catalogue_mapper"] = catalogue_mapper
                             cfr_kwargs["title_to_mid"] = title_to_mid
 
                         facter_metrics[P(f"iter{it}.CFR_{flip_attr}")] = float(compute_cfr(**cfr_kwargs))
