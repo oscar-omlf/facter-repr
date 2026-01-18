@@ -21,8 +21,57 @@ _ML_OCC_IDS = sorted(OCC_ID2LABEL.keys())       # [0..20]
 class CFRConfig:
     protected_cols: Tuple[str, ...] = ("gender", "age", "occupation")
     k: int = 10
-    # which attribute to flip for CFR. You can run multiple and average externally.
-    flip_attr: str = "gender"
+    # which attribute(s) to flip for CFR. Can be a single str or list of str.
+    # If list, all attributes are flipped simultaneously.
+    flip_attr: Optional[Sequence[str]] = None
+    # flip strategy: "random" (uniform random from valid values) or "minimal" (adjacent/opposite values)
+    flip_strategy: str = "random"
+    
+    def __post_init__(self):
+        # Ensure flip_attr is always a sequence, convert str to list if needed
+        if isinstance(self.flip_attr, str):
+            object.__setattr__(self, 'flip_attr', [self.flip_attr])
+        elif self.flip_attr is None:
+            object.__setattr__(self, 'flip_attr', ["gender"])
+        
+        # Validate flip_strategy
+        if self.flip_strategy not in ["random", "minimal"]:
+            raise ValueError("flip_strategy must be 'random' or 'minimal'")
+
+
+def get_flipped_value(attr: str, value, strategy: str = "random") -> str:
+    """
+    Get a flipped value for a protected attribute (MovieLens).
+    
+    Strategy options:
+    - "random": uniformly random valid value (may be the same as original)
+    - "minimal": minimal in-domain flip (gender: opposite, age: adjacent, occupation: next)
+    """
+    if strategy == "random":
+        return get_random_protected_value(attr)
+    elif strategy == "minimal":
+        return flip_protected_value(attr, value)
+    else:
+        raise ValueError(f"Unknown flip strategy: {strategy}")
+
+
+def get_random_protected_value(attr: str) -> str:
+    """
+    Get a random valid value for a protected attribute (MovieLens):
+    - gender: random choice from [M, F]
+    - age: random choice from valid age buckets
+    - occupation: random choice from valid occupation IDs
+    """
+    if attr == "gender":
+        return np.random.choice(["M", "F"])
+    
+    if attr == "age":
+        return str(np.random.choice(_ML_AGE_BUCKETS))
+    
+    if attr == "occupation":
+        return str(np.random.choice(_ML_OCC_IDS))
+    
+    return str(np.random.choice([True, False]))
 
 
 def flip_protected_value(attr: str, value) -> str:
@@ -106,8 +155,9 @@ def compute_cfr(
     - Rank mode: Uses ranker to rank candidates for original and counterfactual prompts
     - Open mode: Uses generator to generate titles for both prompts, maps to mids via catalogue_mapper/title_to_mid
     """
-    if cfg.flip_attr not in cfg.protected_cols:
-        raise ValueError(f"flip_attr must be one of {cfg.protected_cols}")
+    for attr in cfg.flip_attr:
+        if attr not in cfg.protected_cols:
+            raise ValueError(f"flip_attr must contain only attributes from {cfg.protected_cols}, got {attr}")
 
     if predict_mode == "rank" and ranker is None:
         raise ValueError("rank mode requires ranker")
@@ -123,9 +173,10 @@ def compute_cfr(
             prompt_orig = row["prompt_rank"]
             system_prompt = row[f"system_prompt_iter{iter}" if iter is not None else "system_prompt"]
 
-            # counterfactual prompt
+            # counterfactual prompt: flip all specified attributes
             row_cf = row.to_dict()
-            row_cf[cfg.flip_attr] = flip_protected_value(cfg.flip_attr, row_cf[cfg.flip_attr])
+            for attr in cfg.flip_attr:
+                row_cf[attr] = get_flipped_value(attr, row_cf[attr], strategy=cfg.flip_strategy)
             prompt_cf = build_ranking_prompt(row_cf, cand_titles, prompt_cfg)
 
             idx_orig, _ = ranker.rank(prompt_orig, cand_titles, system_prompt=system_prompt)
@@ -157,9 +208,10 @@ def compute_cfr(
             if prompt_orig is None:
                 prompt_orig = build_open_prompt(row.to_dict(), prompt_cfg)
 
-            # Counterfactual prompt
+            # Counterfactual prompt: flip all specified attributes
             row_cf = row.to_dict()
-            row_cf[cfg.flip_attr] = flip_protected_value(cfg.flip_attr, row_cf[cfg.flip_attr])
+            for attr in cfg.flip_attr:
+                row_cf[attr] = get_flipped_value(attr, row_cf[attr], strategy=cfg.flip_strategy)
             prompt_cf = build_open_prompt(row_cf, prompt_cfg)
 
             prompts_all.append(prompt_orig)

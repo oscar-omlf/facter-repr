@@ -115,6 +115,13 @@ def main() -> None:
         help="Comma-separated attrs to compute CFR for (per protected set). Default: attrs in protected set.",
     )
 
+    p.add_argument(
+        "--cfr_flip_strategy",
+        type=str,
+        default="random",
+        choices=["random", "minimal"],
+    )
+
     args = p.parse_args()
 
     # device
@@ -360,10 +367,7 @@ def main() -> None:
                     lambda r: "|".join([f"{c}={r[c]}" for c in protected_cols]), axis=1
                 ).tolist()
 
-                if args.predict_mode == "rank":
-                    rec_lists_b = baseline_df["ranked_mids"].tolist()
-                else:
-                    rec_lists_b = baseline_df["generated_mids"].tolist()
+                rec_lists_b = baseline_df["ranked_mids"].tolist()
 
                 sns_b = snsr_snsv_proxy_from_mid_lists(
                     rec_mid_lists=rec_lists_b,
@@ -376,9 +380,29 @@ def main() -> None:
                 baseline_metrics["SNSR"] = float(sns_b.SNSR)
                 baseline_metrics["SNSV"] = float(sns_b.SNSV)
 
+                # CFR for all flip attrs at the same time:
+                cfr_cfg_all = CFRConfig(flip_attr=cfr_flips, k=args.k, flip_strategy=args.cfr_flip_strategy)
+                cfr_kwargs_all = {
+                    "df": baseline_df,
+                    "embedder": embedder,
+                    "item_db": item_db,
+                    "prompt_cfg": prompt_cfg,
+                    "cfg": cfr_cfg_all,
+                    "predict_mode": args.predict_mode,
+                    "iter": None,
+                }
+                if args.predict_mode == "rank":
+                    cfr_kwargs_all["ranker"] = ranker
+                else:
+                    cfr_kwargs_all["generator"] = generator
+                    cfr_kwargs_all["catalogue_mapper"] = catalogue_mapper
+                    cfr_kwargs_all["title_to_mid"] = title_to_mid
+                
+                baseline_metrics["CFR_all"] = float(compute_cfr(**cfr_kwargs_all))
+
                 # CFR baseline: compute for each flip attr
                 for flip_attr in cfr_flips:
-                    cfr_cfg = CFRConfig(flip_attr=flip_attr, k=args.k)
+                    cfr_cfg = CFRConfig(flip_attr=flip_attr, k=args.k, flip_strategy=args.cfr_flip_strategy)
                     cfr_kwargs = {
                         "df": baseline_df,
                         "embedder": embedder,
@@ -414,7 +438,6 @@ def main() -> None:
                     title_to_mid=title_to_mid if args.predict_mode == "open" else None,
                     catalogue_mapper=catalogue_mapper if args.predict_mode == "open" else None,
                     min_sim=0.65,
-                    # IMPORTANT: requires your monitor.py to accept this param.
                     group_cols=protected_cols,
                 )
 
@@ -466,27 +489,47 @@ def main() -> None:
                         col_name = f"valid_at_k_iter{it}"
                         if col_name in out_df.columns:
                             facter_metrics[P(f"iter{it}.ValidAtK.mean")] = float(np.mean(out_df[col_name]))
+                    
+                # CFR for all flip attrs at the same time:
+                cfr_cfg_all = CFRConfig(flip_attr=cfr_flips, k=args.k, flip_strategy=args.cfr_flip_strategy)
+                cfr_kwargs_all = {
+                    "df": out_df,
+                    "embedder": embedder,
+                    "item_db": item_db,
+                    "prompt_cfg": prompt_cfg,
+                    "cfg": cfr_cfg_all,
+                    "predict_mode": args.predict_mode,
+                    "iter": it,
+                }
+                if args.predict_mode == "rank":
+                    cfr_kwargs_all["ranker"] = ranker
+                else:
+                    cfr_kwargs_all["generator"] = generator
+                    cfr_kwargs_all["catalogue_mapper"] = catalogue_mapper
+                    cfr_kwargs_all["title_to_mid"] = title_to_mid
+                
+                facter_metrics[P(f"iter{it}.CFR_all")] = float(compute_cfr(**cfr_kwargs_all))
 
-                    # CFR per flip attribute
-                    for flip_attr in cfr_flips:
-                        cfr_cfg = CFRConfig(flip_attr=flip_attr, k=args.k)
-                        cfr_kwargs = {
-                            "df": out_df,
-                            "embedder": embedder,
-                            "item_db": item_db,
-                            "prompt_cfg": prompt_cfg,
-                            "cfg": cfr_cfg,
-                            "predict_mode": args.predict_mode,
-                            "iter": it,
-                        }
-                        if args.predict_mode == "rank":
-                            cfr_kwargs["ranker"] = ranker
-                        else:
-                            cfr_kwargs["generator"] = generator
-                            cfr_kwargs["catalogue_mapper"] = catalogue_mapper
-                            cfr_kwargs["title_to_mid"] = title_to_mid
+                # CFR per flip attribute
+                for flip_attr in cfr_flips:
+                    cfr_cfg = CFRConfig(flip_attr=flip_attr, k=args.k)
+                    cfr_kwargs = {
+                        "df": out_df,
+                        "embedder": embedder,
+                        "item_db": item_db,
+                        "prompt_cfg": prompt_cfg,
+                        "cfg": cfr_cfg,
+                        "predict_mode": args.predict_mode,
+                        "iter": it,
+                    }
+                    if args.predict_mode == "rank":
+                        cfr_kwargs["ranker"] = ranker
+                    else:
+                        cfr_kwargs["generator"] = generator
+                        cfr_kwargs["catalogue_mapper"] = catalogue_mapper
+                        cfr_kwargs["title_to_mid"] = title_to_mid
 
-                        facter_metrics[P(f"iter{it}.CFR_{flip_attr}")] = float(compute_cfr(**cfr_kwargs))
+                    facter_metrics[P(f"iter{it}.CFR_{flip_attr}")] = float(compute_cfr(**cfr_kwargs))
 
                 log_metrics(facter_metrics)
                 log_text(json.dumps(facter_metrics, indent=2), f"results/facter_metrics_{pset}.json")
@@ -504,6 +547,8 @@ def main() -> None:
         log_text(json.dumps(timings, indent=2), "results/timings.json")
 
         print("Timings:", timings)
+        print(f"Baseline metrics: {baseline_metrics}")
+        print(f"FACTER metrics: {facter_metrics}")
 
 
 if __name__ == "__main__":

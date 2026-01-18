@@ -134,5 +134,6 @@ def build_open_prompt(row: Dict, cfg: PromptConfig) -> str:
     task = (
         f"Task: Recommend the next {cfg.k_recs} movies the user would like, as a ranked list.\n"
         f"Return ONLY a JSON array of exactly {cfg.k_recs} movie titles (strings), best-first.\n"
+        f"Output format: titles only, do not include explanations. Only recommend new titles, do not repeat titles from the history.\n"
     )
     return (demo + context + task).strip()
