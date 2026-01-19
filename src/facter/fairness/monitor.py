@@ -117,18 +117,17 @@ class FACTEROnlineMonitor:
 
             for i in idx_iter:
                 row = df.iloc[i]
-                if group_cols:
-                    a_value = "|".join([f"{c}={row[c]}" for c in group_cols])
-                else:
-                    a_value = str(row[self.cfg.protected_key])
-
+                cols = group_cols if group_cols is not None else (self.cfg.protected_key,)
+                attrs = {c: str(row[c]) for c in cols}
 
                 system_prompt = self.repair.build_system_prompt(
-                    a_value=a_value,
+                    attrs=attrs,
                     q_alpha=q,
                     iteration=t,
                     max_iterations=self.cfg.max_iterations,
+                    predict_mode=predict_mode,
                 )
+                
                 system_prompts_list.append(system_prompt)
 
                 # Use unified prediction functions from prediction.py
@@ -177,9 +176,9 @@ class FACTEROnlineMonitor:
                 if is_violation:
                     viol += 1
                     if pred_mid != -1:
-                        self.repair.add_violation(protected_value=a_value, pred_mid=pred_mid)
+                        self.repair.add_violation(attrs=attrs, pred_mid=pred_mid)
                     else:
-                        self.repair.add_violation(protected_value=a_value, pred_title=pred_text)
+                        self.repair.add_violation(attrs=attrs, pred_title=pred_text)
 
                     q = update_threshold_theorem2(q_t=q, s_t=s, gamma=self.cfg.gamma)
 

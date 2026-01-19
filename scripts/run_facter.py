@@ -331,10 +331,11 @@ def main() -> None:
                     repair = PromptRepairEngine(
                         PromptRepairConfig(
                             buffer_size=args.buffer_size,
-                            protected_key=protected_cols[0],
+                            protected_cols=protected_cols,
+                            keying="per_attr",
                             min_feature_count=args.min_feature_count,
                             max_rules=5,
-                            domain=domain,
+                            domain="movielens",
                         ),
                         item_db=item_db,
                     )
