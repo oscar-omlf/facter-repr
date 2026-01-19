@@ -131,6 +131,16 @@ def main() -> None:
         choices=["random", "minimal"],
     )
 
+    p.add_argument(
+        "--repair_keying",
+        type=str,
+        default="per_attr",
+        choices=["per_attr", "tuple"],
+        help="How prompt-repair mines AVOID rules from the violation buffer: "
+            "'per_attr' mines per attribute (gender-only / age-only / occupation-only) without duplicating buffer entries; "
+            "'tuple' mines only for the full protected tuple (interaction key).",
+    )
+
     args = p.parse_args()
 
     # device
@@ -228,6 +238,7 @@ def main() -> None:
                 "protected.base_attrs": ",".join(base_attrs),
                 "protected.sweep": bool(args.sweep_protected_sets),
                 "protected.sets_count": len(protected_sets),
+                "repair.keying": args.repair_keying,
             })
             log_text(json.dumps({"protected_sets": protected_sets}, indent=2), "config/protected_sets.json")
 
@@ -286,6 +297,9 @@ def main() -> None:
             for protected_cols in protected_sets:
                 pset = "+".join(protected_cols)
 
+                log_metrics({P("repair.keying.is_tuple"): 1.0 if args.repair_keying == "tuple" else 0.0})
+                log_text(args.repair_keying, f"config/repair_keying_{pset}.txt")
+
                 def P(name: str) -> str:
                     return f"pset.{pset}.{name}" if args.sweep_protected_sets else name
 
@@ -332,7 +346,7 @@ def main() -> None:
                         PromptRepairConfig(
                             buffer_size=args.buffer_size,
                             protected_cols=protected_cols,
-                            keying="per_attr",
+                            keying=args.repair_keying,
                             min_feature_count=args.min_feature_count,
                             max_rules=5,
                             domain=domain,
