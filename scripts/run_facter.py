@@ -5,6 +5,9 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, List, Tuple
+from codecarbon import EmissionsTracker
+import os
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -595,4 +598,24 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # Define and create the directory
+    output_dir = "./emissions"
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Create a unique filename (e.g., emissions_20240520_143005.csv)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_filename = f"emissions_{timestamp}.csv"
+
+    # Initialize the tracker with your custom settings
+    tracker = EmissionsTracker(
+        project_name="facter_repro",
+        output_dir=output_dir,
+        output_file=run_filename, # This sets the specific file name
+        save_to_api=False
+    )
+
+    with tracker:
+        main()
+
+    print(f"\n[CodeCarbon] Energy tracking finished.")
+    print(f" -> Results saved to: {os.path.join(output_dir, run_filename)}")
