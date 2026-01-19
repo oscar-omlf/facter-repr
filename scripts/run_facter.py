@@ -297,11 +297,11 @@ def main() -> None:
             for protected_cols in protected_sets:
                 pset = "+".join(protected_cols)
 
-                log_metrics({P("repair.keying.is_tuple"): 1.0 if args.repair_keying == "tuple" else 0.0})
-                log_text(args.repair_keying, f"config/repair_keying_{pset}.txt")
-
                 def P(name: str) -> str:
                     return f"pset.{pset}.{name}" if args.sweep_protected_sets else name
+
+                log_metrics({P("repair.keying.is_tuple"): 1.0 if args.repair_keying == "tuple" else 0.0})
+                log_text(args.repair_keying, f"config/repair_keying_{pset}.txt")
 
                 # Default CFR flips: each attribute in the current protected set
                 if args.cfr_flip_attrs:
