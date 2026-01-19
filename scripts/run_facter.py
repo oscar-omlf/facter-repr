@@ -335,7 +335,7 @@ def main() -> None:
                             keying="per_attr",
                             min_feature_count=args.min_feature_count,
                             max_rules=5,
-                            domain="movielens",
+                            domain=domain,
                         ),
                         item_db=item_db,
                     )
