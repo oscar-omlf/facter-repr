@@ -10,15 +10,17 @@ Outputs:
 - mapped mids (optional if you have mid->title map)
 - Valid@K (fraction of mapped items that pass similarity threshold)
 """
+
 from __future__ import annotations
 
-from ast import pattern
 import logging
 import re
+from ast import pattern
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
+import torch
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +56,11 @@ def rewrite_prompt_attrs(prompt: str, new_attrs: Dict[str, str]) -> str:
         return out
 
     # Otherwise prepend a new block
-    profile = "User profile (audit only):\n" + "\n".join([f"- {k}: {v}" for k, v in new_attrs.items()]) + "\n\n"
+    profile = (
+        "User profile (audit only):\n"
+        + "\n".join([f"- {k}: {v}" for k, v in new_attrs.items()])
+        + "\n\n"
+    )
     return profile + out
 
 
@@ -84,7 +90,7 @@ class CatalogueMapper:
 
         self._catalog_mids: List[str] = []
         self._catalog_titles: List[str] = []
-        self._catalog_embeds: Optional[np.ndarray] = None
+        self._catalog_embeds: Optional[torch.Tensor] = None
 
     @property
     def catalog_titles(self) -> List[str]:
@@ -119,11 +125,15 @@ class CatalogueMapper:
         self._catalog_mids = mids
         self._catalog_titles = titles
 
-        logger.info(f"Building catalog embeddings for {len(self._catalog_titles)} items...")
+        logger.info(
+            f"Building catalog embeddings for {len(self._catalog_titles)} items..."
+        )
         # Use TextEmbedder.encode_texts which returns normalized numpy array [N, D]
         self._catalog_embeds = self.embedder.encode_texts(self._catalog_titles)
 
-    def map_one(self, title: str, min_sim: float = 0.65) -> Tuple[Optional[str], Optional[str], float]:
+    def map_one(
+        self, title: str, min_sim: float = 0.65
+    ) -> Tuple[Optional[str], Optional[str], float]:
         """
         Map a single free-text title to (mid, catalog_title, sim).
         Returns (None, None, sim) if below threshold.
@@ -137,16 +147,18 @@ class CatalogueMapper:
 
         # Use TextEmbedder.encode_text which returns normalized numpy array [D]
         q = self.embedder.encode_text(title)
-        
-        # Compute cosine similarity with all catalog embeddings
-        # Both q and catalog_embeds are already normalized, so dot product = cosine similarity
-        sims = np.dot(self._catalog_embeds, q)  # [N]
-        j = int(np.argmax(sims))
-        sim = float(sims[j])
+
+        # Compute cosine similarity
+        # q [D], catalog [N, D] -> [N]
+        # Since both are normalized, dot product is cosine sim.
+        sims = torch.mv(self._catalog_embeds, q)  # [N]
+        best_idx = torch.argmax(sims).item()
+        sim = float(sims[best_idx].item())
 
         if sim < min_sim:
             return None, None, sim
-        return self._catalog_mids[j], self._catalog_titles[j], sim
+
+        return self._catalog_mids[best_idx], self._catalog_titles[best_idx], sim
 
     def map_list(
         self,
@@ -187,4 +199,9 @@ class CatalogueMapper:
                     valid += 1
 
         valid_at_k = float(valid) / float(k) if k > 0 else 0.0
-        return MapResult(mapped_titles=mapped_titles, mapped_mids=mapped_mids, sims=sims_out, valid_at_k=valid_at_k)
+        return MapResult(
+            mapped_titles=mapped_titles,
+            mapped_mids=mapped_mids,
+            sims=sims_out,
+            valid_at_k=valid_at_k,
+        )

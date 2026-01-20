@@ -1,18 +1,14 @@
 from dataclasses import dataclass
-from typing import Iterable, List, Sequence
+from typing import List, Sequence
 
-import numpy as np
 import pandas as pd
+import torch
 
 from facter.models.embedder import TextEmbedder
 
 
 @dataclass(frozen=True)
 class ContextEncodingConfig:
-    """
-    Enc(x): encode non-sensitive user context.
-    For now: encode only history titles (no demographics).
-    """
     max_history_items: int = 5
 
 
@@ -31,11 +27,16 @@ class ContextEncoder:
         lines.extend([f"- {t}" for t in hist])
         return "\n".join(lines)
 
-
-    def encode_df(self, df: pd.DataFrame) -> np.ndarray:
+    def encode_batch(self, history_titles_batch: List[List[str]]) -> torch.Tensor:
         """
-        df must include history_titles column (list[str]).
-        Returns float32 array [N, D]. Assumes embedder returns normalized embeddings.
+        Encodes a batch of history lists directly.
         """
-        texts: List[str] = [self._context_text(h) for h in df["history_titles"].tolist()]
+        texts: List[str] = [self._context_text(h) for h in history_titles_batch]
         return self.embedder.encode_texts(texts)
+
+    def encode_df(self, df: pd.DataFrame) -> torch.Tensor:
+        """
+        Encodes the entire dataframe.
+        Warning: For large datasets, use encode_batch within a loader loop instead.
+        """
+        return self.encode_batch(df["history_titles"].tolist())

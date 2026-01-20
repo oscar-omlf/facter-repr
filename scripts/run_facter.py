@@ -1,47 +1,52 @@
 import argparse
 import itertools
 import json
+import os
 import time
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple
-from codecarbon import EmissionsTracker
-import os
-from datetime import datetime
 
 import numpy as np
 import pandas as pd
 import torch
+from codecarbon import EmissionsTracker
+from torch.utils.data import DataLoader
 
+from facter.data.dataset import InteractionDataset, dict_collate_fn
 from facter.data.download import download_dataset
 from facter.data.frames import AmazonFrames, MovieLensFrames
-
-from facter.fairness.calibration import OfflineCalibrator, OfflineCalibConfig
+from facter.data.prompts import PromptConfig
+from facter.eval.baselines import evaluate_zero_shot, run_zero_shot
+from facter.eval.catalogue_map import CatalogueMapper
+from facter.eval.counterfactual import CFRConfig, compute_cfr
+from facter.eval.metrics import (
+    count_violations,
+    mean_recall_ndcg,
+    snsr_snsv_proxy_from_mid_lists,
+)
+from facter.fairness.calibration import OfflineCalibConfig, OfflineCalibrator
 from facter.fairness.context_encoder import ContextEncoder, ContextEncodingConfig
 from facter.fairness.monitor import FACTEROnlineMonitor, OnlineMonitorConfig
-from facter.fairness.online import CalibrationArtifacts, OnlineScorer, OnlineScoringConfig
-
+from facter.fairness.online import (
+    CalibrationArtifacts,
+    OnlineScorer,
+    OnlineScoringConfig,
+)
 from facter.models.embedder import EmbedderConfig, TextEmbedder
-from facter.models.hf_generator import HFOpenGenerator, HFGenConfig
+from facter.models.hf_generator import HFGenConfig, HFOpenGenerator
 from facter.models.hf_ranker import HFChatRanker, HFChatRankerConfig
-
 from facter.prompting.repair import PromptRepairConfig, PromptRepairEngine
-
-from facter.eval.metrics import mean_recall_ndcg, snsr_snsv_proxy_from_mid_lists, count_violations
-from facter.eval.baselines import evaluate_zero_shot, run_zero_shot
-from facter.eval.counterfactual import compute_cfr, CFRConfig
-from facter.eval.catalogue_map import CatalogueMapper
-
 from facter.tracking.mlflow import (
     MLflowConfig,
-    start_run,
-    log_params,
-    log_metrics,
-    log_text,
     log_dataframe,
+    log_metrics,
+    log_params,
+    log_text,
+    start_run,
 )
-from facter.utils.seeding import seed_all, SeedConfig
-from facter.data.prompts import PromptConfig
+from facter.utils.seeding import SeedConfig, seed_all
 
 
 def _read_split(processed_dir: Path, split: str) -> pd.DataFrame:
@@ -49,6 +54,28 @@ def _read_split(processed_dir: Path, split: str) -> pd.DataFrame:
     if not path.exists():
         raise FileNotFoundError(f"Missing split file: {path}")
     return pd.read_json(path, lines=True)
+
+
+def _get_loader(
+    processed_dir: Path, split: str, batch_size: int
+) -> Tuple[InteractionDataset, DataLoader, pd.DataFrame]:
+    path = processed_dir / split / "dataset.jsonl"
+    if not path.exists():
+        raise FileNotFoundError(f"Missing split file: {path}")
+
+    dataset = InteractionDataset(path)
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=dict_collate_fn,
+        num_workers=0,  # Simplifies debugging; increase for performance if CPU bound
+    )
+    # Convert to DataFrame for state tracking / metadata access
+    # Since we loaded via json and InteractionDataset is eager,
+    # we can access dataset.data directly.
+    df = pd.DataFrame(dataset.data)
+    return dataset, loader, df
 
 
 @contextmanager
@@ -79,13 +106,20 @@ def main() -> None:
         "--datasets",
         type=str,
         default="ml-1m",
-        help="Comma-separated list of datasets to run: ml-1m and/or amazon. Default: ml-1m"
+        help="Comma-separated list of datasets to run: ml-1m and/or amazon. Default: ml-1m",
     )
-    p.add_argument("--processed_dir_template", type=str, default="data/processed/{dataset}")
+    p.add_argument(
+        "--processed_dir_template", type=str, default="data/processed/{dataset}"
+    )
     p.add_argument("--model_id", type=str, required=True)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
+    p.add_argument(
+        "--device", type=str, default="auto", choices=["auto", "cpu", "cuda"]
+    )
     p.add_argument("--progress", action="store_true")
+    p.add_argument(
+        "--batch_size", type=int, default=8, help="Batch size for offline inference"
+    )
 
     # FACTER hyperparams
     p.add_argument("--alpha", type=float, default=0.10)
@@ -98,9 +132,18 @@ def main() -> None:
     p.add_argument("--max_iterations", type=int, default=3)
 
     # single-attribute options (still works)
-    p.add_argument("--protected_attr", type=str, default="gender", choices=["gender", "age", "occupation"])
-    p.add_argument("--cfr_flip_attr", type=str, default="gender", choices=["gender", "age", "occupation"])
-
+    p.add_argument(
+        "--protected_attr",
+        type=str,
+        default="gender",
+        choices=["gender", "age", "occupation"],
+    )
+    p.add_argument(
+        "--cfr_flip_attr",
+        type=str,
+        default="gender",
+        choices=["gender", "age", "occupation"],
+    )
     p.add_argument("--k", type=int, default=10)
     p.add_argument("--predict_mode", type=str, default="rank", choices=["rank", "open"])
 
@@ -110,7 +153,7 @@ def main() -> None:
         type=str,
         default=None,
         help="Comma-separated attrs to treat jointly, e.g. gender,age or gender,age,occupation. "
-             "If not provided, uses --protected_attr.",
+        "If not provided, uses --protected_attr.",
     )
     p.add_argument(
         "--sweep_protected_sets",
@@ -137,8 +180,8 @@ def main() -> None:
         default="per_attr",
         choices=["per_attr", "tuple"],
         help="How prompt-repair mines AVOID rules from the violation buffer: "
-            "'per_attr' mines per attribute (gender-only / age-only / occupation-only) without duplicating buffer entries; "
-            "'tuple' mines only for the full protected tuple (interaction key).",
+        "'per_attr' mines per attribute (gender-only / age-only / occupation-only) without duplicating buffer entries; "
+        "'tuple' mines only for the full protected tuple (interaction key).",
     )
 
     args = p.parse_args()
@@ -153,6 +196,7 @@ def main() -> None:
     datasets = [d.strip().lower() for d in args.datasets.split(",") if d.strip()]
     if not datasets:
         datasets = ["ml-1m"]
+
     for ds in datasets:
         if ds not in ["ml-1m", "amazon"]:
             raise ValueError(f"Unknown dataset: {ds}. Allowed: ml-1m, amazon")
@@ -185,9 +229,9 @@ def main() -> None:
 
     # Loop over datasets
     for dataset_name in datasets:
-        print(f"\n\n{'='*80}")
+        print(f"\n\n{'=' * 80}")
         print(f"Processing dataset: {dataset_name.upper()}")
-        print(f"{'='*80}\n")
+        print(f"{'=' * 80}\n")
 
         timings: dict[str, float] = {}
 
@@ -195,12 +239,19 @@ def main() -> None:
         if args.processed_dir_template == "data/processed/{dataset}":
             if dataset_name == "ml-1m":
                 processed_dir = Path("data/processed/ml-1m")
+
             elif dataset_name == "amazon":
                 processed_dir = Path("data/processed/amazon")
+
             else:
-                processed_dir = Path(args.processed_dir_template.format(dataset=dataset_name))
+                processed_dir = Path(
+                    args.processed_dir_template.format(dataset=dataset_name)
+                )
+
         else:
-            processed_dir = Path(args.processed_dir_template.format(dataset=dataset_name))
+            processed_dir = Path(
+                args.processed_dir_template.format(dataset=dataset_name)
+            )
 
         # MLflow
         repo_root = Path(__file__).resolve().parents[1]
@@ -219,48 +270,66 @@ def main() -> None:
                 "predict_mode": args.predict_mode,
             },
         ):
-            log_params({
-                "dataset": dataset_name,
-                "seed": args.seed,
-                "device": device,
-                "model_id": args.model_id,
-                "predict_mode": args.predict_mode,
-                "alpha": args.alpha,
-                "lambda_fairness": args.lambda_fairness,
-                "tau_rho": args.tau_rho,
-                "tau_x_l2": args.tau_x_l2,
-                "gamma": args.gamma,
-                "buffer_size": args.buffer_size,
-                "min_feature_count": args.min_feature_count,
-                "max_iterations": args.max_iterations,
-                "k": args.k,
-                "progress": bool(args.progress),
-                "protected.base_attrs": ",".join(base_attrs),
-                "protected.sweep": bool(args.sweep_protected_sets),
-                "protected.sets_count": len(protected_sets),
-                "repair.keying": args.repair_keying,
-            })
-            log_text(json.dumps({"protected_sets": protected_sets}, indent=2), "config/protected_sets.json")
+            log_params(
+                {
+                    "dataset": dataset_name,
+                    "seed": args.seed,
+                    "device": device,
+                    "model_id": args.model_id,
+                    "predict_mode": args.predict_mode,
+                    "alpha": args.alpha,
+                    "lambda_fairness": args.lambda_fairness,
+                    "tau_rho": args.tau_rho,
+                    "tau_x_l2": args.tau_x_l2,
+                    "gamma": args.gamma,
+                    "buffer_size": args.buffer_size,
+                    "min_feature_count": args.min_feature_count,
+                    "max_iterations": args.max_iterations,
+                    "k": args.k,
+                    "progress": bool(args.progress),
+                    "protected.base_attrs": ",".join(base_attrs),
+                    "protected.sweep": bool(args.sweep_protected_sets),
+                    "protected.sets_count": len(protected_sets),
+                    "repair.keying": args.repair_keying,
+                }
+            )
+            log_text(
+                json.dumps({"protected_sets": protected_sets}, indent=2),
+                "config/protected_sets.json",
+            )
 
             with stage("seeding", timings):
                 seed_all(SeedConfig(seed=args.seed))
 
-            with stage("load_processed_splits", timings):
-                cal_df = _read_split(processed_dir, "cal")
-                test_df = _read_split(processed_dir, "test")
-                log_metrics({"data.cal_n": float(len(cal_df)), "data.test_n": float(len(test_df))})
+            with stage("load_data", timings):
+                # Load via Dataset/DataLoader for efficiency
+                _, cal_loader, cal_df = _get_loader(
+                    processed_dir, "cal", args.batch_size
+                )
+                _, test_loader, test_df = _get_loader(
+                    processed_dir, "test", args.batch_size
+                )
+
+                log_metrics(
+                    {
+                        "data.cal_n": float(len(cal_df)),
+                        "data.test_n": float(len(test_df)),
+                    }
+                )
 
             with stage("load_raw_item_db", timings):
                 raw_dir = download_dataset(dataset=dataset_name, force=False)
                 if dataset_name == "ml-1m":
                     frames = MovieLensFrames(raw_dir)
                     domain = "movielens"
+
                 elif dataset_name == "amazon":
                     frames = AmazonFrames(raw_dir=raw_dir)
                     domain = "amazon"
+
                 else:
                     raise ValueError(f"Unknown dataset: {dataset_name}")
-                
+
                 item_db = frames.build_item_db()
                 log_metrics({"data.items_n": float(len(item_db))})
 
@@ -276,22 +345,38 @@ def main() -> None:
                         model_name="JJTsao/fine-tuned_movie_retriever-all-mpnet-base-v2",
                         device=device,
                         progress=args.progress,
+                        batch_size=args.batch_size * 4,
                     )
                 )
-                ranker = HFChatRanker(HFChatRankerConfig(model_id=args.model_id))
+
+                cfg_rank = HFChatRankerConfig(
+                    model_id=args.model_id,
+                    device_map="auto" if device == "cuda" else None,
+                    torch_dtype="float16" if device == "cuda" else "auto",
+                )
+                ranker = HFChatRanker(cfg=cfg_rank)
 
                 generator = None
                 if args.predict_mode == "open":
+                    cfg_gen = HFGenConfig(
+                        model_id=args.model_id,
+                        batch_size=args.batch_size,
+                    )
                     generator = HFOpenGenerator(
-                        HFGenConfig(model_id=args.model_id),
+                        cfg=cfg_gen,
                         tokenizer=ranker.tokenizer,
                         model=ranker.model,
                     )
 
             with stage("build_catalogue_mapper", timings):
-                catalogue_mapper = CatalogueMapper(embedder=embedder, item_db=item_db, title_key="title")
+                catalogue_mapper = CatalogueMapper(
+                    embedder=embedder, item_db=item_db, title_key="title"
+                )
                 catalogue_mapper.build(dedup=True)
-                log_metrics({"catalog.items_n": float(len(catalogue_mapper.catalog_titles))})
+
+                log_metrics(
+                    {"catalog.items_n": float(len(catalogue_mapper.catalog_titles))}
+                )
 
             # Sweep over protected sets (single attrs and combinations)
             for protected_cols in protected_sets:
@@ -300,24 +385,36 @@ def main() -> None:
                 def P(name: str) -> str:
                     return f"pset.{pset}.{name}" if args.sweep_protected_sets else name
 
-                log_metrics({P("repair.keying.is_tuple"): 1.0 if args.repair_keying == "tuple" else 0.0})
+                log_metrics(
+                    {
+                        P("repair.keying.is_tuple"): 1.0
+                        if args.repair_keying == "tuple"
+                        else 0.0
+                    }
+                )
                 log_text(args.repair_keying, f"config/repair_keying_{pset}.txt")
 
                 # Default CFR flips: each attribute in the current protected set
                 if args.cfr_flip_attrs:
-                    cfr_flips = [a.strip() for a in args.cfr_flip_attrs.split(",") if a.strip()]
+                    cfr_flips = [
+                        a.strip() for a in args.cfr_flip_attrs.split(",") if a.strip()
+                    ]
                 else:
                     cfr_flips = list(protected_cols)
 
                 for a in cfr_flips:
                     if a not in ALLOWED:
-                        raise ValueError(f"Unknown CFR flip attr: {a}. Allowed: {ALLOWED}")
+                        raise ValueError(
+                            f"Unknown CFR flip attr: {a}. Allowed: {ALLOWED}"
+                        )
 
                 log_metrics({P("protected_cols_count"): float(len(protected_cols))})
                 log_text(",".join(protected_cols), f"config/protected_cols_{pset}.txt")
 
                 with stage(f"init_facter_components[{pset}]", timings):
-                    ctx = ContextEncoder(embedder, ContextEncodingConfig(max_history_items=10))
+                    ctx = ContextEncoder(
+                        embedder, ContextEncodingConfig(max_history_items=10)
+                    )
 
                     off_cfg = OfflineCalibConfig(
                         alpha=args.alpha,
@@ -328,12 +425,15 @@ def main() -> None:
                         top_k_neighbors=None,
                     )
                     calibrator = OfflineCalibrator(
-                        ranker=ranker, embedder=embedder, context_encoder=ctx, cfg=off_cfg
+                        ranker=ranker,
+                        embedder=embedder,
+                        context_encoder=ctx,
+                        cfg=off_cfg,
                     )
 
                     scorer = OnlineScorer(
                         embedder,
-                        ctx,
+                        # ctx is removed here as it is not used in score_one anymore
                         OnlineScoringConfig(
                             protected_cols=protected_cols,
                             tau_rho=args.tau_rho,
@@ -363,6 +463,7 @@ def main() -> None:
                             gamma=args.gamma,
                             protected_key=protected_cols[0],
                         ),
+                        context_encoder=ctx,  # <--- PASS CTX HERE
                     )
 
                     prompt_cfg = PromptConfig(k_recs=args.k)
@@ -377,33 +478,49 @@ def main() -> None:
                         generator=generator,
                         prompt_cfg=prompt_cfg,
                         catalogue_mapper=catalogue_mapper,
+                        batch_loader=cal_loader,
                     )
-                    log_metrics({
-                        P("offline.q_alpha0"): float(cal_res.q_alpha0),
-                        P("offline.S_mean"): float(np.mean(cal_res.scores_S)),
-                        P("offline.S_max"): float(np.max(cal_res.scores_S)),
-                    })
-                    if args.predict_mode == "open" and "valid_at_k" in cal_res.cal_df.columns:
+                    log_metrics(
+                        {
+                            P("offline.q_alpha0"): float(cal_res.q_alpha0),
+                            P("offline.S_mean"): float(np.mean(cal_res.scores_S)),
+                            P("offline.S_max"): float(np.max(cal_res.scores_S)),
+                        }
+                    )
+                    if (
+                        args.predict_mode == "open"
+                        and "valid_at_k" in cal_res.cal_df.columns
+                    ):
                         try:
-                            log_metrics({P("offline.ValidAtK.mean"): float(np.mean(cal_res.cal_df["valid_at_k"]))})
+                            log_metrics(
+                                {
+                                    P("offline.ValidAtK.mean"): float(
+                                        np.mean(cal_res.cal_df["valid_at_k"])
+                                    )
+                                }
+                            )
                         except Exception:
                             pass
 
-                    log_dataframe(cal_res.cal_df, f"data/calibration_df_{pset}.json", format="json")
+                    log_dataframe(
+                        cal_res.cal_df,
+                        f"data/calibration_df_{pset}.json",
+                        format="json",
+                    )
 
-                cal_art = CalibrationArtifacts(
-                    cal_df=cal_res.cal_df,
-                    cal_context_emb=cal_res.cal_context_emb,
-                    cal_pred_emb=cal_res.cal_pred_emb,
-                    q_alpha0=cal_res.q_alpha0,
-                )
+                # cal_art = CalibrationArtifacts(
+                #     cal_df=cal_res.cal_df,
+                #     cal_context_emb=cal_res.cal_context_emb,
+                #     cal_pred_emb=cal_res.cal_pred_emb,
+                #     q_alpha0=cal_res.q_alpha0,
+                # )
 
                 with stage(f"baseline_zero_shot[{pset}]", timings):
                     NEUTRAL_SYSTEM_PROMPT = (
-                    "You are a helpful recommendation assistant.\n"
-                    "Recommend items based on the user's watch history.\n"
-                    f"Return ONLY a JSON array of exactly {args.k} item titles (strings), ranked best-first.\n"
-    )
+                        "You are a helpful recommendation assistant.\n"
+                        "Recommend items based on the user's watch history.\n"
+                        f"Return ONLY a JSON array of exactly {args.k} item titles (strings), ranked best-first.\n"
+                    )
 
                     baseline_df = run_zero_shot(
                         test_df.copy(),
@@ -416,19 +533,27 @@ def main() -> None:
                         title_to_mid=title_to_mid,
                         progress=args.progress,
                         system_prompt=NEUTRAL_SYSTEM_PROMPT,
+                        batch_loader=test_loader,
                     )
 
                     baseline_metrics = evaluate_zero_shot(baseline_df, k=args.k)
 
-                    if args.predict_mode == "open" and "valid_at_k" in baseline_df.columns:
-                        baseline_metrics["ValidAtK.mean"] = float(np.mean(baseline_df["valid_at_k"]))
+                    if (
+                        args.predict_mode == "open"
+                        and "valid_at_k" in baseline_df.columns
+                    ):
+                        baseline_metrics["ValidAtK.mean"] = float(
+                            np.mean(baseline_df["valid_at_k"])
+                        )
 
-                    group_keys_b = baseline_df[list(protected_cols)].astype(str).apply(
-                        lambda r: "|".join([f"{c}={r[c]}" for c in protected_cols]), axis=1
-                    ).tolist()
+                    group_keys_b = (
+                        baseline_df[list(protected_cols)]
+                        .astype(str)
+                        .agg("|".join, axis=1)
+                        .tolist()
+                    )
 
                     rec_lists_b = baseline_df["ranked_mids"].tolist()
-
                     sns_b = snsr_snsv_proxy_from_mid_lists(
                         rec_mid_lists=rec_lists_b,
                         group_keys=group_keys_b,
@@ -441,7 +566,11 @@ def main() -> None:
                     baseline_metrics["SNSV"] = float(sns_b.SNSV)
 
                     # CFR for all flip attrs at the same time:
-                    cfr_cfg_all = CFRConfig(flip_attr=cfr_flips, k=args.k, flip_strategy=args.cfr_flip_strategy)
+                    cfr_cfg_all = CFRConfig(
+                        flip_attr=cfr_flips,
+                        k=args.k,
+                        flip_strategy=args.cfr_flip_strategy,
+                    )
                     cfr_kwargs_all = {
                         "df": baseline_df,
                         "embedder": embedder,
@@ -457,12 +586,16 @@ def main() -> None:
                         cfr_kwargs_all["generator"] = generator
                         cfr_kwargs_all["catalogue_mapper"] = catalogue_mapper
                         cfr_kwargs_all["title_to_mid"] = title_to_mid
-                    
+
                     baseline_metrics["CFR_all"] = float(compute_cfr(**cfr_kwargs_all))
 
                     # CFR baseline: compute for each flip attr
                     for flip_attr in cfr_flips:
-                        cfr_cfg = CFRConfig(flip_attr=flip_attr, k=args.k, flip_strategy=args.cfr_flip_strategy)
+                        cfr_cfg = CFRConfig(
+                            flip_attr=flip_attr,
+                            k=args.k,
+                            flip_strategy=args.cfr_flip_strategy,
+                        )
                         cfr_kwargs = {
                             "df": baseline_df,
                             "embedder": embedder,
@@ -479,47 +612,75 @@ def main() -> None:
                             cfr_kwargs["catalogue_mapper"] = catalogue_mapper
                             cfr_kwargs["title_to_mid"] = title_to_mid
 
-                        baseline_metrics[f"CFR_{flip_attr}"] = float(compute_cfr(**cfr_kwargs))
+                        baseline_metrics[f"CFR_{flip_attr}"] = float(
+                            compute_cfr(**cfr_kwargs)
+                        )
 
-                    log_metrics({P(f"baseline.{k}"): v for k, v in baseline_metrics.items()})
-                    log_dataframe(baseline_df, f"data/baseline_df_{pset}.json", format="json")
-                    log_text(json.dumps(baseline_metrics, indent=2), f"results/baseline_metrics_{pset}.json")
-
+                    log_metrics(
+                        {P(f"baseline.{k}"): v for k, v in baseline_metrics.items()}
+                    )
+                    log_dataframe(
+                        baseline_df, f"data/baseline_df_{pset}.json", format="json"
+                    )
+                    log_text(
+                        json.dumps(baseline_metrics, indent=2),
+                        f"results/baseline_metrics_{pset}.json",
+                    )
 
                 # ---- online monitor ----
                 with stage(f"online_monitor[{pset}]", timings):
                     out_df, logs = monitor.run(
                         test_df=test_df,
                         item_db=item_db,
-                        cal_artifacts=cal_art,
+                        cal_artifacts=cal_res,
                         q_alpha0=cal_res.q_alpha0,
                         progress=args.progress,
                         predict_mode=args.predict_mode,
                         generator=generator,
                         prompt_cfg=prompt_cfg,
-                        title_to_mid=title_to_mid if args.predict_mode == "open" else None,
-                        catalogue_mapper=catalogue_mapper if args.predict_mode == "open" else None,
+                        title_to_mid=title_to_mid
+                        if args.predict_mode == "open"
+                        else None,
+                        catalogue_mapper=catalogue_mapper
+                        if args.predict_mode == "open"
+                        else None,
                         min_sim=0.65,
                         group_cols=protected_cols,
                     )
 
                     for it_log in logs:
-                        log_metrics({
-                            P(f"iter{it_log.iteration}.q_alpha_end"): float(it_log.q_alpha),
-                            P(f"iter{it_log.iteration}.violations"): float(it_log.violations),
-                            P(f"iter{it_log.iteration}.S_mean"): float(it_log.mean_S),
-                        }, step=it_log.iteration)
+                        log_metrics(
+                            {
+                                P(f"iter{it_log.iteration}.q_alpha_end"): float(
+                                    it_log.q_alpha
+                                ),
+                                P(f"iter{it_log.iteration}.violations"): float(
+                                    it_log.violations
+                                ),
+                                P(f"iter{it_log.iteration}.S_mean"): float(
+                                    it_log.mean_S
+                                ),
+                            },
+                            step=it_log.iteration,
+                        )
 
-                    log_dataframe(out_df, f"data/online_monitor_df_{pset}.json", format="json")
+                    log_dataframe(
+                        out_df, f"data/online_monitor_df_{pset}.json", format="json"
+                    )
 
                 with stage(f"compute_facter_metrics[{pset}]", timings):
                     facter_metrics = {}
                     targets = out_df["target_mid"].astype(int).tolist()
 
-                    group_keys = out_df[list(protected_cols)].astype(str).apply(
-                        lambda r: "|".join([f"{c}={r[c]}" for c in protected_cols]),
-                        axis=1,
-                    ).tolist()
+                    group_keys = (
+                        out_df[list(protected_cols)]
+                        .astype(str)
+                        .apply(
+                            lambda r: "|".join([f"{c}={r[c]}" for c in protected_cols]),
+                            axis=1,
+                        )
+                        .tolist()
+                    )
 
                     for it in range(1, args.max_iterations + 1):
                         if args.predict_mode == "rank":
@@ -531,8 +692,12 @@ def main() -> None:
                         v = int(np.sum(out_df[f"is_violation_iter{it}"].to_numpy()))
 
                         facter_metrics[P(f"iter{it}.violations")] = float(v)
-                        facter_metrics[P(f"iter{it}.Recall{args.k}")] = m[f"Recall@{args.k}"]
-                        facter_metrics[P(f"iter{it}.NDCG{args.k}")] = m[f"NDCG@{args.k}"]
+                        facter_metrics[P(f"iter{it}.Recall{args.k}")] = m[
+                            f"Recall@{args.k}"
+                        ]
+                        facter_metrics[P(f"iter{it}.NDCG{args.k}")] = m[
+                            f"NDCG@{args.k}"
+                        ]
 
                         # SNSR/SNSV (paper-aligned proxy) on mids
                         sns = snsr_snsv_proxy_from_mid_lists(
@@ -550,10 +715,16 @@ def main() -> None:
                         if args.predict_mode == "open":
                             col_name = f"valid_at_k_iter{it}"
                             if col_name in out_df.columns:
-                                facter_metrics[P(f"iter{it}.ValidAtK.mean")] = float(np.mean(out_df[col_name]))
-                        
+                                facter_metrics[P(f"iter{it}.ValidAtK.mean")] = float(
+                                    np.mean(out_df[col_name])
+                                )
+
                     # CFR for all flip attrs at the same time:
-                    cfr_cfg_all = CFRConfig(flip_attr=cfr_flips, k=args.k, flip_strategy=args.cfr_flip_strategy)
+                    cfr_cfg_all = CFRConfig(
+                        flip_attr=cfr_flips,
+                        k=args.k,
+                        flip_strategy=args.cfr_flip_strategy,
+                    )
                     cfr_kwargs_all = {
                         "df": out_df,
                         "embedder": embedder,
@@ -569,8 +740,10 @@ def main() -> None:
                         cfr_kwargs_all["generator"] = generator
                         cfr_kwargs_all["catalogue_mapper"] = catalogue_mapper
                         cfr_kwargs_all["title_to_mid"] = title_to_mid
-                    
-                    facter_metrics[P(f"iter{it}.CFR_all")] = float(compute_cfr(**cfr_kwargs_all))
+
+                    facter_metrics[P(f"iter{it}.CFR_all")] = float(
+                        compute_cfr(**cfr_kwargs_all)
+                    )
 
                     # CFR per flip attribute
                     for flip_attr in cfr_flips:
@@ -591,14 +764,23 @@ def main() -> None:
                             cfr_kwargs["catalogue_mapper"] = catalogue_mapper
                             cfr_kwargs["title_to_mid"] = title_to_mid
 
-                        facter_metrics[P(f"iter{it}.CFR_{flip_attr}")] = float(compute_cfr(**cfr_kwargs))
+                        facter_metrics[P(f"iter{it}.CFR_{flip_attr}")] = float(
+                            compute_cfr(**cfr_kwargs)
+                        )
 
                     log_metrics(facter_metrics)
-                    log_text(json.dumps(facter_metrics, indent=2), f"results/facter_metrics_{pset}.json")
+                    log_text(
+                        json.dumps(facter_metrics, indent=2),
+                        f"results/facter_metrics_{pset}.json",
+                    )
 
                 # save parquet per protected set
                 with stage(f"save_outputs[{pset}]", timings):
-                    out_path = processed_dir / "runs" / f"run_{args.model_id.replace('/', '_')}_{pset}_{args.predict_mode}.parquet"
+                    out_path = (
+                        processed_dir
+                        / "runs"
+                        / f"run_{args.model_id.replace('/', '_')}_{pset}_{args.predict_mode}.parquet"
+                    )
                     out_path.parent.mkdir(parents=True, exist_ok=True)
                     out_df.to_parquet(out_path, index=False)
                     log_text(str(out_path), f"results/output_path_{pset}.txt")
@@ -609,7 +791,6 @@ def main() -> None:
             print(f"Timings for {dataset_name}:", timings)
             print(f"Baseline metrics: {baseline_metrics}")
             print(f"FACTER metrics: {facter_metrics}")
-
 
 
 if __name__ == "__main__":
@@ -625,12 +806,12 @@ if __name__ == "__main__":
     tracker = EmissionsTracker(
         project_name="facter_repro",
         output_dir=output_dir,
-        output_file=run_filename, # This sets the specific file name
-        save_to_api=False
+        output_file=run_filename,  # This sets the specific file name
+        save_to_api=False,
     )
 
     with tracker:
         main()
 
-    print(f"\n[CodeCarbon] Energy tracking finished.")
+    print("\n[CodeCarbon] Energy tracking finished.")
     print(f" -> Results saved to: {os.path.join(output_dir, run_filename)}")

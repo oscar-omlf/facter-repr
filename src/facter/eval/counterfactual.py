@@ -3,6 +3,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+import torch
 
 from facter.data.prompts import AGE_ID2LABEL, OCC_ID2LABEL
 from facter.data.prompts import PromptConfig, build_ranking_prompt, build_open_prompt
@@ -14,8 +15,9 @@ from facter.models.generator import Generator
 from facter.models.ranker import Ranker
 
 
-_ML_AGE_BUCKETS = sorted(AGE_ID2LABEL.keys())   # [1, 18, 25, 35, 45, 50, 56]
-_ML_OCC_IDS = sorted(OCC_ID2LABEL.keys())       # [0..20]
+_ML_AGE_BUCKETS = sorted(AGE_ID2LABEL.keys())  # [1, 18, 25, 35, 45, 50, 56]
+_ML_OCC_IDS = sorted(OCC_ID2LABEL.keys())  # [0, ..., 20]
+
 
 @dataclass(frozen=True)
 class CFRConfig:
@@ -26,14 +28,14 @@ class CFRConfig:
     flip_attr: Optional[Sequence[str]] = None
     # flip strategy: "random" (uniform random from valid values) or "minimal" (adjacent/opposite values)
     flip_strategy: str = "random"
-    
+
     def __post_init__(self):
         # Ensure flip_attr is always a sequence, convert str to list if needed
         if isinstance(self.flip_attr, str):
-            object.__setattr__(self, 'flip_attr', [self.flip_attr])
+            object.__setattr__(self, "flip_attr", [self.flip_attr])
         elif self.flip_attr is None:
-            object.__setattr__(self, 'flip_attr', ["gender"])
-        
+            object.__setattr__(self, "flip_attr", ["gender"])
+
         # Validate flip_strategy
         if self.flip_strategy not in ["random", "minimal"]:
             raise ValueError("flip_strategy must be 'random' or 'minimal'")
@@ -42,7 +44,7 @@ class CFRConfig:
 def get_flipped_value(attr: str, value, strategy: str = "random") -> str:
     """
     Get a flipped value for a protected attribute (MovieLens).
-    
+
     Strategy options:
     - "random": uniformly random valid value (may be the same as original)
     - "minimal": minimal in-domain flip (gender: opposite, age: adjacent, occupation: next)
@@ -64,13 +66,13 @@ def get_random_protected_value(attr: str) -> str:
     """
     if attr == "gender":
         return np.random.choice(["M", "F"])
-    
+
     if attr == "age":
         return str(np.random.choice(_ML_AGE_BUCKETS))
-    
+
     if attr == "occupation":
         return str(np.random.choice(_ML_OCC_IDS))
-    
+
     return str(np.random.choice([True, False]))
 
 
@@ -117,9 +119,14 @@ def flip_protected_value(attr: str, value) -> str:
     return str(value)
 
 
-def _embed_list_mean(embedder: TextEmbedder, mids: Sequence[int], item_db: Dict[int, Dict[str, str]]) -> np.ndarray:
+def _embed_list_mean(
+    embedder: TextEmbedder, mids: Sequence[int], item_db: Dict[int, Dict[str, str]]
+) -> np.ndarray:
     texts = [item_text(int(m), item_db) for m in mids]
     embs = embedder.encode_texts(texts)  # [K,D], normalized
+    if isinstance(embs, torch.Tensor):
+        embs = embs.detach().cpu().numpy()
+
     v = np.mean(embs, axis=0).astype(np.float32)
     # normalize mean vector to compare with cosine/dot
     n = np.linalg.norm(v)
@@ -157,75 +164,111 @@ def compute_cfr(
     """
     for attr in cfg.flip_attr:
         if attr not in cfg.protected_cols:
-            raise ValueError(f"flip_attr must contain only attributes from {cfg.protected_cols}, got {attr}")
+            raise ValueError(
+                f"flip_attr must contain only attributes from {cfg.protected_cols}, got {attr}"
+            )
 
     if predict_mode == "rank" and ranker is None:
         raise ValueError("rank mode requires ranker")
+
     if predict_mode == "open" and generator is None:
         raise ValueError("open mode requires generator")
 
+    # Determine system prompt column once
+    sys_col = f"system_prompt_iter{iter}" if iter is not None else "system_prompt"
+
+    # Helpers for constructing prompt strings via apply (faster than iterrows)
+    def build_cf_row_dict(row: pd.Series):
+        d = row.to_dict()
+        for attr in cfg.flip_attr:
+            d[attr] = get_flipped_value(attr, d[attr], strategy=cfg.flip_strategy)
+
+        return d
+
+    def make_cf_prompt(row: pd.Series):
+        cf_data = build_cf_row_dict(row)
+        return build_ranking_prompt(cf_data, row["candidate_titles"], prompt_cfg)
+
     dists: List[float] = []
-
     if predict_mode == "rank":
-        # Rank mode: use ranker to select top-k from candidate set
-        for _, row in df.iterrows():
-            cand_titles = row["candidate_titles"]
-            prompt_orig = row["prompt_rank"]
-            system_prompt = row[f"system_prompt_iter{iter}" if iter is not None else "system_prompt"]
+        # OPTIMIZATION: Prepare batches for Ranker
+        prompts_orig = df["prompt_rank"].tolist()
+        candidates_list = df["candidate_titles"].tolist()
+        systems = df[sys_col].tolist()
 
-            # counterfactual prompt: flip all specified attributes
-            row_cf = row.to_dict()
-            for attr in cfg.flip_attr:
-                row_cf[attr] = get_flipped_value(attr, row_cf[attr], strategy=cfg.flip_strategy)
-            prompt_cf = build_ranking_prompt(row_cf, cand_titles, prompt_cfg)
+        # Build counterfactual prompts
+        prompts_cf = df.apply(make_cf_prompt, axis=1).tolist()
 
-            idx_orig, _ = ranker.rank(prompt_orig, cand_titles, system_prompt=system_prompt)
-            idx_orig = idx_orig[: cfg.k]
-            idx_cf, _ = ranker.rank(prompt_cf, cand_titles, system_prompt=system_prompt)
-            idx_cf = idx_cf[: cfg.k]
+        # Batch Inference - Original
+        # We process in one go (Ranker handles batching internally or we pass all list)
+        # HFChatRanker.rank_batch handles list inputs
+        # Batch Inference - Counterfactual
+        idx_orig_list, _ = ranker.rank_batch(prompts_orig, candidates_list, systems)
+        idx_cf_list, _ = ranker.rank_batch(prompts_cf, candidates_list, systems)
 
-            mids_orig = [int(row["candidate_mids"][i]) for i in idx_orig]
-            mids_cf = [int(row["candidate_mids"][i]) for i in idx_cf]
+        # Compute distances
+        cand_mids_list = df["candidate_mids"].tolist()
+        for i in range(len(df)):
+            cand_mids = cand_mids = cand_mids_list[i]
+
+            # Slice top-k
+            top_orig = idx_orig_list[i][: cfg.k]
+            top_cf = idx_cf_list[i][: cfg.k]
+
+            mids_orig = [int(cand_mids[x]) for x in top_orig]
+            mids_cf = [int(cand_mids[x]) for x in top_cf]
 
             v_orig = _embed_list_mean(embedder, mids_orig, item_db)
             v_cf = _embed_list_mean(embedder, mids_cf, item_db)
             dists.append(_l2_distance(v_orig, v_cf))
 
     elif predict_mode == "open":
-        # Open mode: use generator to produce titles, map to mids
         if title_to_mid is None and catalogue_mapper is None:
             title_to_mid = build_title_to_mid_dict(item_db)
 
-        # Collect all prompts (original and counterfactual) for batched generation
-        prompts_all: List[str] = []
-        system_prompts_all: List[str] = []
-        
-        for _, row in df.iterrows():
-            system_prompt = row[f"system_prompt_iter{iter}" if iter is not None else "system_prompt"]
+        # Prefer existing prompt columns if available
+        if "prompt_open" in df.columns:
+            prompts_orig = df["prompt_open"].fillna("").tolist()
+            # fallback if empty strings
+            if any(not p for p in prompts_orig):
+                # Only re-build missing
+                prompts_orig = df.apply(
+                    lambda r: r.get("prompt_open")
+                    or r.get("prompt_gen")
+                    or build_open_prompt(r.to_dict(), prompt_cfg),
+                    axis=1,
+                ).tolist()
 
-            # Original prompt
-            prompt_orig = row.get("prompt_open", row.get("prompt_gen", None))
-            if prompt_orig is None:
-                prompt_orig = build_open_prompt(row.to_dict(), prompt_cfg)
+        elif "prompt_gen" in df.columns:
+            prompts_orig = df["prompt_gen"].tolist()
 
-            # Counterfactual prompt: flip all specified attributes
-            row_cf = row.to_dict()
-            for attr in cfg.flip_attr:
-                row_cf[attr] = get_flipped_value(attr, row_cf[attr], strategy=cfg.flip_strategy)
-            prompt_cf = build_open_prompt(row_cf, prompt_cfg)
+        else:
+            prompts_orig = df.apply(
+                lambda r: build_open_prompt(r.to_dict(), prompt_cfg), axis=1
+            ).tolist()
 
-            prompts_all.append(prompt_orig)
-            prompts_all.append(prompt_cf)
-            system_prompts_all.append(system_prompt)
-            system_prompts_all.append(system_prompt)
+        # Counterfactual prompts
+        prompts_cf = df.apply(
+            lambda r: build_open_prompt(build_cf_row_dict(r), prompt_cfg), axis=1
+        ).tolist()
+
+        systems = df[sys_col].tolist()
+
+        # Interleave for generation? Or just concat. Concat is easier.
+        prompts_all = prompts_orig + prompts_cf
+        systems_all = systems + systems
 
         # Single batched generation call for all prompts
-        all_titles = generator.generate_topk(prompts_all, system_prompts_all, k=cfg.k)
+        all_titles = generator.generate_topk(prompts_all, systems_all, k=cfg.k)
 
-        # Process results in pairs (original, counterfactual)
-        for i in range(0, len(all_titles), 2):
-            titles_orig = all_titles[i]
-            titles_cf = all_titles[i + 1]
+        n = len(df)
+        titles_orig_list = all_titles[:n]
+        titles_cf_list = all_titles[n:]
+
+        # Map and Compute
+        for i in range(n):
+            titles_orig = titles_orig_list[i]
+            titles_cf = titles_cf_list[i]
 
             # Map to mids
             mids_orig: List[int] = []
@@ -233,20 +276,37 @@ def compute_cfr(
 
             if catalogue_mapper is not None:
                 # Use embedding-based mapper
-                map_res_orig = catalogue_mapper.map_list(titles_orig, k=cfg.k, min_sim=min_sim)
-                mids_orig = [int(m) for m in getattr(map_res_orig, "mapped_mids", []) if m is not None]
-                map_res_cf = catalogue_mapper.map_list(titles_cf, k=cfg.k, min_sim=min_sim)
-                mids_cf = [int(m) for m in getattr(map_res_cf, "mapped_mids", []) if m is not None]
+                map_res_orig = catalogue_mapper.map_list(
+                    titles_orig, k=cfg.k, min_sim=min_sim
+                )
+                mids_orig = [
+                    int(m)
+                    for m in getattr(map_res_orig, "mapped_mids", [])
+                    if m is not None
+                ]
+
+                map_res_cf = catalogue_mapper.map_list(
+                    titles_cf, k=cfg.k, min_sim=min_sim
+                )
+                mids_cf = [
+                    int(m)
+                    for m in getattr(map_res_cf, "mapped_mids", [])
+                    if m is not None
+                ]
+
             elif title_to_mid is not None:
                 # Use normalized dict mapping
                 for tt in titles_orig:
                     key = str(tt).strip().lower()
                     mid = title_to_mid.get(key, -1)
+
                     if mid != -1 and int(mid) not in mids_orig:
                         mids_orig.append(int(mid))
+
                 for tt in titles_cf:
                     key = str(tt).strip().lower()
                     mid = title_to_mid.get(key, -1)
+
                     if mid != -1 and int(mid) not in mids_cf:
                         mids_cf.append(int(mid))
 
@@ -260,4 +320,3 @@ def compute_cfr(
         raise ValueError("predict_mode must be 'rank' or 'open'")
 
     return float(np.mean(dists)) if dists else 0.0
-

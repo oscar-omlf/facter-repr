@@ -1,13 +1,10 @@
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
-import numpy as np
+import torch
 import pandas as pd
-
-
-from facter.models.embedder import TextEmbedder
-from facter.fairness.context_encoder import ContextEncoder
 from facter.fairness.scoring import item_text
+from facter.models.embedder import TextEmbedder
 
 
 @dataclass(frozen=True)
@@ -20,16 +17,22 @@ class OnlineScoringConfig:
 
 @dataclass(frozen=True)
 class CalibrationArtifacts:
-    cal_df: pd.DataFrame            # must include protected cols
-    cal_context_emb: np.ndarray     # [N, D], normalized
-    cal_pred_emb: np.ndarray        # [N, D], normalized  (fix comment)
+    cal_df: pd.DataFrame
+    cal_context_emb: torch.Tensor  # [N, D]
+    cal_pred_emb: torch.Tensor  # [N, D]
+    cal_group_ids: torch.Tensor  # [N] Int tensor for fast group comparison
+    group_code_map: Dict[str, int]  # "val1_val2" -> int ID
     q_alpha0: float
 
 
 class OnlineScorer:
-    def __init__(self, embedder: TextEmbedder, context_encoder: ContextEncoder, cfg: OnlineScoringConfig):
+    def __init__(
+        self,
+        embedder: TextEmbedder,
+        cfg: OnlineScoringConfig,
+        # Note: context_encoder is removed from init as it is no longer used here
+    ):
         self.embedder = embedder
-        self.context_encoder = context_encoder
         self.cfg = cfg
 
     def score_one(
@@ -38,39 +41,50 @@ class OnlineScorer:
         pred_mid: Optional[int],
         item_db: Dict[int, Dict[str, str]],
         cal: CalibrationArtifacts,
+        precomputed_context_emb: torch.Tensor,
         target_mid: Optional[int] = None,
         pred_text: Optional[str] = None,
+        precomputed_group_id: int = -1,
     ) -> Tuple[float, float, float]:
         """
-        Online scoring for a single example.
-        Supports either:
-        - rank mode: pred_mid provided, pred_text None
-        - open mode: pred_text provided (optionally also a mapped pred_mid)
+        Online scoring for a single example using GPU acceleration.
+        Uses precomputed_context_emb (history) to avoid re-running BERT.
         """
-        df_one = pd.DataFrame([row.to_dict()])
-        x_new = self.context_encoder.encode_df(df_one)[0]  # [D] normalized
-        sims = cal.cal_context_emb @ x_new
+        # 1. Context Embedding (Pre-computed)
+        # x_new is passed in directly. It is already on the correct device.
+        x_new = precomputed_context_emb
 
-        # Cross-group mask
-        a_new = tuple(str(row[c]) for c in self.cfg.protected_cols)
-        a_cal = (
-            cal.cal_df[list(self.cfg.protected_cols)]
-            .astype(str)
-            .agg("_".join, axis=1)
-            .to_numpy()
-        )
-        cross = a_cal != "_".join(a_new)
+        # 2. Similarity with Calibration Set (Matrix-Vector)
+        # cal_context_emb [N, D] @ x_new [D] -> [N]
+        sims = torch.mv(cal.cal_context_emb, x_new)
 
-        # Optional locality gate (embedding L2 radius τx)
-        if self.cfg.tau_x_l2 is not None:
-            cos_min = 1.0 - (self.cfg.tau_x_l2 ** 2) / 2.0
+        # 3. Cross-Group Mask (Fast Integer Lookup)
+        # Use precomputed group ID if available
+        if precomputed_group_id != -1:
+            gid_new = precomputed_group_id
         else:
-            cos_min = -np.inf
+            # Fallback (slower)
+            a_vals = [str(row[c]) for c in self.cfg.protected_cols]
+            a_key = "_".join(a_vals)
+            gid_new = cal.group_code_map.get(a_key, -1)
 
-        neigh_mask = cross & (sims >= self.cfg.tau_rho) & (sims >= cos_min)
-        neigh_idx = np.where(neigh_mask)[0]
+        # Mask: True where cal_group != current_group
+        cross_mask = cal.cal_group_ids != gid_new
 
-        # Prediction embedding: from pred_text if provided, else from item_db mid
+        # 4. Locality Gate
+        if self.cfg.tau_x_l2 is not None:
+            cos_min = 1.0 - (self.cfg.tau_x_l2**2) / 2.0
+            locality_mask = sims >= cos_min
+            valid_mask = cross_mask & locality_mask
+
+        else:
+            valid_mask = cross_mask
+
+        # 5. Rho Gate
+        rho_mask = sims >= self.cfg.tau_rho
+        neigh_mask = valid_mask & rho_mask
+
+        # 6. Prediction Embedding (Dynamic - must be computed)
         if pred_text is not None:
             pred_txt = str(pred_text)
         else:
@@ -78,23 +92,30 @@ class OnlineScorer:
                 raise ValueError("Either pred_text or pred_mid must be provided.")
             pred_txt = item_text(int(pred_mid), item_db)
 
-        pred_emb = self.embedder.encode_texts([pred_txt])[0]  # [D], normalized
+        pred_emb = self.embedder.encode_text(pred_txt)  # [D] Tensor
 
-        # \Delta_new
-        if neigh_idx.size == 0:
-            delta_new = 0.0
-        else:
-            diffs = cal.cal_pred_emb[neigh_idx] - pred_emb
-            dists = np.sqrt(np.sum(diffs * diffs, axis=1))
-            delta_new = float(np.max(dists))
+        # 7. Delta Calculation (Vectorized max)
+        # ||a - b|| = sqrt(2 - 2<a,b>) for normalized vectors
+        cos_sims_pred = torch.mv(cal.cal_pred_emb, pred_emb)
+        dists = torch.sqrt(torch.clamp(2.0 * (1.0 - cos_sims_pred), min=0.0))
 
-        # d_new (requires ground-truth target_mid for offline eval)
+        # Apply mask: set invalid to -1 so they don't affect max
+        dists_masked = dists.clone()
+        dists_masked[~neigh_mask] = -1.0
+
+        delta_new_t = torch.max(dists_masked)
+        delta_new = float(delta_new_t.item())
+        if delta_new < 0:
+            delta_new = 0.0  # happens if no neighbors found
+
+        # 8. d_new (Relevance)
         if target_mid is None:
             d_new = 0.0
         else:
             ref_txt = item_text(int(target_mid), item_db)
-            ref_emb = self.embedder.encode_texts([ref_txt])[0]
-            d_new = float(1.0 - float(np.sum(pred_emb * ref_emb)))
+            ref_emb = self.embedder.encode_text(ref_txt)
+            # 1 - cos
+            d_new = 1.0 - float(torch.dot(pred_emb, ref_emb).item())
 
-        s_new = float(d_new + self.cfg.lambda_fairness * delta_new)
-        return s_new, float(d_new), float(delta_new)
+        s_new = d_new + self.cfg.lambda_fairness * delta_new
+        return s_new, d_new, delta_new

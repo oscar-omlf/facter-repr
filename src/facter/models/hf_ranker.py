@@ -20,26 +20,26 @@ def _normalize_title(s: str) -> str:
     s = re.sub(r"\s+", " ", s)
     s = re.sub(r"[^a-z0-9 \-:'&(),.!?]", "", s)
     s = s.strip()
-    
+
     # Move determiners from end to beginning: "Fish Called Wanda, A" -> "A Fish Called Wanda"
     # Handle patterns like ", A (year)", ", The (year)", ", An (year)"
     # First remove year in parentheses temporarily
-    year_match = re.search(r'\s*\((\d{4})\)$', s)
+    year_match = re.search(r"\s*\((\d{4})\)$", s)
     year_suffix = ""
     if year_match:
         year_suffix = f" ({year_match.group(1)})"
-        s = s[:year_match.start()].strip()
-    
+        s = s[: year_match.start()].strip()
+
     # Now handle determiner at end: ", A", ", The", ", An"
-    determiner_match = re.search(r',\s*(a|an|the)$', s, re.IGNORECASE)
+    determiner_match = re.search(r",\s*(a|an|the)$", s, re.IGNORECASE)
     if determiner_match:
         determiner = determiner_match.group(1).lower()
-        title_without_determiner = s[:determiner_match.start()].strip()
+        title_without_determiner = s[: determiner_match.start()].strip()
         s = f"{determiner} {title_without_determiner}"
-    
+
     # Re-add year if it existed
     s = s + year_suffix
-    
+
     return s.strip()
 
 
@@ -128,8 +128,8 @@ class HFChatRankerConfig:
     temperature: float = 0.0
     top_p: float = 1.0
     repetition_penalty: float = 1.0
-    torch_dtype: str = "auto"       # "auto" | "float16" | "bfloat16"
-    device_map: str = "auto"        # passed to transformers
+    torch_dtype: str = "auto"  # "auto" | "float16" | "bfloat16"
+    device_map: str = "auto"  # passed to transformers
     trust_remote_code: bool = False
 
 
@@ -140,6 +140,7 @@ class HFChatRanker:
     Deterministic settings by default (do_sample=False when temperature==0).
     Caches rankings on disk keyed by (system_prompt, user_prompt, candidates).
     """
+
     def __init__(self, cfg: HFChatRankerConfig):
         self.cfg = cfg
         self.cfg.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -154,7 +155,9 @@ class HFChatRanker:
         else:
             raise ValueError(f"Unknown torch_dtype: {dtype}")
 
-        self.tokenizer = AutoTokenizer.from_pretrained(cfg.model_id, use_fast=True, trust_remote_code=cfg.trust_remote_code)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            cfg.model_id, use_fast=True, trust_remote_code=cfg.trust_remote_code
+        )
         self.model = AutoModelForCausalLM.from_pretrained(
             cfg.model_id,
             torch_dtype=torch_dtype,
@@ -166,7 +169,12 @@ class HFChatRanker:
         self._model_cache_dir = self.cfg.cache_dir / _sha256(cfg.model_id)[:16]
         self._model_cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def _cache_key(self, prompt_rank: str, candidate_titles: Sequence[str], system_prompt: Optional[str]) -> str:
+    def _cache_key(
+        self,
+        prompt_rank: str,
+        candidate_titles: Sequence[str],
+        system_prompt: Optional[str],
+    ) -> str:
         blob = {
             "system": system_prompt or "",
             "user": prompt_rank,
@@ -177,10 +185,124 @@ class HFChatRanker:
     def _cache_path(self, key: str) -> Path:
         return self._model_cache_dir / f"{key}.json"
 
-    def rank(self, prompt_rank: str, candidate_titles: Sequence[str], system_prompt: str | None = None) -> Tuple[List[int], str]:
+    def rank_batch(
+        self,
+        prompt_ranks: List[str],
+        candidate_titles_list: List[List[str]],
+        system_prompts: List[Optional[str]],
+    ) -> Tuple[List[List[int]], List[str]]:
+        """
+        Batched ranking to utilize GPU.
+        """
+        if not (len(prompt_ranks) == len(candidate_titles_list) == len(system_prompts)):
+            raise ValueError("Batch inputs must have same length")
+
+        batch_size = len(prompt_ranks)
+        results: List[Optional[Tuple[List[int], str]]] = [None] * batch_size
+
+        # 1. Check cache for all items
+        missing_indices = []
+        missing_prompts = []
+
+        for i in range(batch_size):
+            key = self._cache_key(
+                prompt_ranks[i], candidate_titles_list[i], system_prompts[i]
+            )
+            cpath = self._cache_path(key)
+
+            if cpath.exists():
+                obj = json.loads(cpath.read_text(encoding="utf-8"))
+                results[i] = (list(obj["ranked_indices"]), obj.get("raw_text", ""))
+            else:
+                missing_indices.append(i)
+
+                # Prepare prompt for missing
+                sys = system_prompts[i]
+                usr = prompt_ranks[i]
+                msgs = []
+                if sys:
+                    msgs.append({"role": "system", "content": sys})
+                msgs.append({"role": "user", "content": usr})
+
+                # Apply template or fallback
+                prompt = None
+                chat_template = getattr(self.tokenizer, "chat_template", None)
+                if chat_template:
+                    try:
+                        prompt = self.tokenizer.apply_chat_template(
+                            msgs, tokenize=False, add_generation_prompt=True
+                        )
+                    except ValueError:
+                        pass
+
+                if prompt is None:
+                    prompt = ""
+                    if sys:
+                        prompt += f"SYSTEM:\n{sys}\n\n"
+                    prompt += f"USER:\n{usr}\n\nASSISTANT:\n"
+
+                missing_prompts.append(prompt)
+
+        # 2. Run inference for missing items
+        if missing_indices:
+            inputs = self.tokenizer(
+                missing_prompts, return_tensors="pt", padding=True, truncation=True
+            ).to(self.model.device)
+
+            do_sample = not (self.cfg.temperature == 0.0)
+            gen = self.model.generate(
+                **inputs,
+                max_new_tokens=self.cfg.max_new_tokens,
+                do_sample=do_sample,
+                temperature=self.cfg.temperature if do_sample else None,
+                top_p=self.cfg.top_p if do_sample else None,
+                repetition_penalty=self.cfg.repetition_penalty,
+                pad_token_id=self.tokenizer.eos_token_id,
+            )
+
+            # Decode and cache
+            for j, original_idx in enumerate(missing_indices):
+                # Slice output to get only new tokens
+                input_len = inputs["input_ids"].shape[-1]
+                new_tokens = gen[j][input_len:]
+                out_text = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
+
+                ranked = _parse_ranking_to_indices(
+                    out_text, candidate_titles_list[original_idx]
+                )
+
+                # Save to cache
+                key = self._cache_key(
+                    prompt_ranks[original_idx],
+                    candidate_titles_list[original_idx],
+                    system_prompts[original_idx],
+                )
+                cpath = self._cache_path(key)
+                cpath.write_text(
+                    json.dumps(
+                        {"ranked_indices": ranked, "raw_text": out_text},
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+
+                results[original_idx] = (ranked, out_text)
+
+        # Unzip results
+        final_indices = [r[0] for r in results]
+        final_texts = [r[1] for r in results]
+        return final_indices, final_texts
+
+    def rank(
+        self,
+        prompt_rank: str,
+        candidate_titles: Sequence[str],
+        system_prompt: str | None = None,
+    ) -> Tuple[List[int], str]:
         key = self._cache_key(prompt_rank, candidate_titles, system_prompt)
         cpath = self._cache_path(key)
-        
+
         if cpath.exists():
             obj = json.loads(cpath.read_text(encoding="utf-8"))
             return list(obj["ranked_indices"]), obj.get("raw_text", "")
@@ -224,11 +346,17 @@ class HFChatRanker:
             pad_token_id=self.tokenizer.eos_token_id,
         )
 
-        out = self.tokenizer.decode(gen[0][inputs["input_ids"].shape[-1]:], skip_special_tokens=True)
+        out = self.tokenizer.decode(
+            gen[0][inputs["input_ids"].shape[-1] :], skip_special_tokens=True
+        )
         ranked = _parse_ranking_to_indices(out, candidate_titles)
 
         cpath.write_text(
-            json.dumps({"ranked_indices": ranked, "raw_text": out}, ensure_ascii=False, indent=2),
+            json.dumps(
+                {"ranked_indices": ranked, "raw_text": out},
+                ensure_ascii=False,
+                indent=2,
+            ),
             encoding="utf-8",
         )
         return ranked, out

@@ -3,51 +3,52 @@ Reusable prediction utilities for rank and open-generation modes.
 Used by: calibration, baselines, and online monitoring.
 """
 
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
-
 import json
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Optional, Union
+
 import pandas as pd
+import torch
+from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from facter.models.ranker import Ranker
-from facter.models.generator import Generator
+from facter.data.prompts import PromptConfig, build_open_prompt
 from facter.eval.catalogue_map import CatalogueMapper
 from facter.fairness.scoring import item_text
-from facter.data.prompts import PromptConfig, build_open_prompt
+from facter.models.generator import Generator
+from facter.models.ranker import Ranker
 
 
 @dataclass
 class PredictionResult:
     """Holds prediction results for a single or batch of examples."""
+
     pred_mids: List[int]
     pred_texts: List[str]
-    ranked_mids_list: List[List[int]]  # For rank mode: all ranked mids; for open mode: mapped mids
-    generated_titles_list: List[List[str]]  # Empty for rank mode; generated titles for open mode
-    valid_at_k_list: List[float]  # For open mode: ratio of valid mappings
-    model_responses: List[str]  # Raw responses (ranker or generator output)
+    ranked_mids_list: List[List[int]]
+    generated_titles_list: List[List[str]]
+    valid_at_k_list: List[float]
+    model_responses: List[str]
 
 
 def predict_single_rank(
-    row: pd.Series,
+    row: Union[pd.Series, Dict],
     ranker: Ranker,
     item_db: Dict[int, Dict[str, str]],
     system_prompt: Optional[str] = None,
 ) -> PredictionResult:
-    """
-    Single prediction in rank mode (select top-1 from candidates).
-    """
-    candidates_titles: List[str] = row["candidate_titles"]
-    candidate_mids: List[int] = row["candidate_mids"]
+    # Handle both Series and Dict access
+    candidates_titles = row["candidate_titles"]
+    candidate_mids = row["candidate_mids"]
+    prompt_rank = row["prompt_rank"]
 
     ranked_idx, raw_response = ranker.rank(
-        row["prompt_rank"], candidates_titles, system_prompt=system_prompt
+        prompt_rank, candidates_titles, system_prompt=system_prompt
     )
 
     best_idx = ranked_idx[0]
     pred_mid = int(candidate_mids[best_idx])
     pred_text = item_text(pred_mid, item_db)
-
     ranked_mids = [int(candidate_mids[idx]) for idx in ranked_idx]
 
     return PredictionResult(
@@ -61,7 +62,7 @@ def predict_single_rank(
 
 
 def predict_single_open(
-    row: pd.Series,
+    row: Union[pd.Series, Dict],
     generator: Generator,
     item_db: Dict[int, Dict[str, str]],
     prompt_cfg: PromptConfig,
@@ -70,13 +71,13 @@ def predict_single_open(
     title_to_mid: Optional[Dict[str, int]] = None,
     min_sim: float = 0.65,
 ) -> PredictionResult:
-    """
-    Single prediction in open-generation mode (generate titles then map to mids).
-    """
-    open_prompt = row.get("prompt_open", row.get("prompt_gen", None))
-    if open_prompt is None:
-        # Fall back to building if needed
-        open_prompt = build_open_prompt(row.to_dict(), prompt_cfg)
+    # Robust prompt retrieval
+    if "prompt_open" in row:
+        open_prompt = row["prompt_open"]
+    elif "prompt_gen" in row:
+        open_prompt = row["prompt_gen"]
+    else:
+        open_prompt = build_open_prompt(row, prompt_cfg)
 
     titles = generator.generate_topk(
         [open_prompt], [system_prompt], k=prompt_cfg.k_recs
@@ -86,31 +87,34 @@ def predict_single_open(
     valid_at_k = 0.0
     pred_text = ""
 
-    # Preferred: embedding-based catalog mapping (authors' approach)
     if catalogue_mapper is not None:
-        map_res = catalogue_mapper.map_list(titles, k=prompt_cfg.k_recs, min_sim=min_sim)
-        # keep valid mapped mids in rank order
+        map_res = catalogue_mapper.map_list(
+            titles, k=prompt_cfg.k_recs, min_sim=min_sim
+        )
         mids = [int(m) for m in getattr(map_res, "mapped_mids", []) if m is not None]
         valid_at_k = float(getattr(map_res, "valid_at_k", 0.0))
-
-        # use canonical mapped title for pred_text if available
         mapped_titles = getattr(map_res, "mapped_titles", [])
         if mapped_titles and mapped_titles[0]:
             pred_text = str(mapped_titles[0])
         else:
             pred_text = titles[0] if titles else "UNKNOWN_GENERATION"
 
-    # Fallback: exact normalized dict mapping (not paper-aligned, but keeps pipeline usable)
     elif title_to_mid is not None:
         for tt in titles:
             key = str(tt).strip().lower()
             mid = title_to_mid.get(key, -1)
             if mid != -1 and int(mid) not in mids:
                 mids.append(int(mid))
-        # crude "valid@k" proxy under dict mapping
-        valid_at_k = float(min(len(mids), prompt_cfg.k_recs)) / float(prompt_cfg.k_recs) if prompt_cfg.k_recs else 0.0
-        pred_text = item_text(int(mids[0]), item_db) if mids else (titles[0] if titles else "UNKNOWN_GENERATION")
-
+        valid_at_k = (
+            float(min(len(mids), prompt_cfg.k_recs)) / float(prompt_cfg.k_recs)
+            if prompt_cfg.k_recs
+            else 0.0
+        )
+        pred_text = (
+            item_text(int(mids[0]), item_db)
+            if mids
+            else (titles[0] if titles else "UNKNOWN_GENERATION")
+        )
     else:
         pred_text = titles[0] if titles else "UNKNOWN_GENERATION"
 
@@ -127,52 +131,91 @@ def predict_single_open(
 
 
 def predict_batch_rank(
-    df: pd.DataFrame,
+    data: Union[pd.DataFrame, DataLoader, Iterable[Dict]],
     ranker: Ranker,
     item_db: Dict[int, Dict[str, str]],
     system_prompt: Optional[str] = None,
     progress: bool = False,
 ) -> PredictionResult:
     """
-    Batch prediction in rank mode. If the ranker supports rank_batch, use it; otherwise fallback to per-row.
+    Batch prediction in rank mode. Optimized for Tensor inputs from DataLoader.
     """
-    n = len(df)
-
-    # Prepare inputs
-    prompt_ranks: List[str] = []
-    candidate_titles_list: List[List[str]] = []
-    system_prompts: List[Optional[str]] = []
-    it = df.iterrows()
-    for _, row in it:
-        prompt_ranks.append(row["prompt_rank"])
-        candidate_titles_list.append(list(row["candidate_titles"]))
-        system_prompts.append(system_prompt)
-
     ranked_mids_list: List[List[int]] = []
     model_responses_list: List[str] = []
+    pred_mids_list: List[int] = []
+    pred_texts_list: List[str] = []
 
-    # Use batched path if available
-    if hasattr(ranker, "rank_batch"):
-        ranked_idx_list, raw_texts = ranker.rank_batch(prompt_ranks, candidate_titles_list, system_prompts)
-        for i in range(n):
-            top_idx = ranked_idx_list[i]
-            mids = [int(df.iloc[i]["candidate_mids"][j]) for j in top_idx]
-            ranked_mids_list.append(mids)
-        model_responses_list = raw_texts
-    else:
-        # Fallback to per-row
-        it2 = df.iterrows()
-        if progress:
-            it2 = tqdm(it2, total=n, desc="Ranking (per-row)")
-        for _, row in it2:
-            ranked_idx, raw_response = ranker.rank(row["prompt_rank"], row["candidate_titles"], system_prompt=system_prompt)
-            mids = [int(row["candidate_mids"][j]) for j in ranked_idx]
-            ranked_mids_list.append(mids)
-            model_responses_list.append(raw_response)
+    iterator = data
+    if isinstance(data, pd.DataFrame):
+        iterator = data.to_dict("records")
 
-    pred_mids_list = [m[0] if m else -1 for m in ranked_mids_list]
-    pred_texts_list = [item_text(mid, item_db) if mid != -1 else "" for mid in pred_mids_list]
+    if progress:
+        total = len(data) if hasattr(data, "__len__") else None
+        iterator = tqdm(iterator, total=total, desc="Ranking")
 
+    for batch in iterator:
+        # Determine if 'batch' is a single item or a collated batch
+        # If it's a dict and 'prompt_rank' is a list/tensor with len > 1 (or 0), it's a batch
+        is_batched = (
+            isinstance(batch, dict)
+            and (
+                isinstance(batch.get("prompt_rank"), list)
+                or isinstance(batch.get("prompt_rank"), torch.Tensor)
+            )
+            and not isinstance(batch.get("prompt_rank"), str)
+        )
+
+        if is_batched:
+            prompt_ranks = batch["prompt_rank"]
+            candidate_titles_list = batch["candidate_titles"]
+
+            # Optimization: If candidate_mids is a Tensor, convert to list of lists once
+            # to avoid frequent CPU<->GPU sync during the loop
+            candidate_mids_raw = batch["candidate_mids"]
+            if isinstance(candidate_mids_raw, torch.Tensor):
+                candidate_mids_list = candidate_mids_raw.detach().cpu().tolist()
+            else:
+                candidate_mids_list = candidate_mids_raw
+
+            sys_prompts = [system_prompt] * len(prompt_ranks)
+
+            if hasattr(ranker, "rank_batch"):
+                ranked_idx_list, raw_texts = ranker.rank_batch(
+                    prompt_ranks, candidate_titles_list, sys_prompts
+                )
+            else:
+                ranked_idx_list = []
+                raw_texts = []
+                for p, c, s in zip(prompt_ranks, candidate_titles_list, sys_prompts):
+                    r_idx, r_txt = ranker.rank(p, c, system_prompt=s)
+                    ranked_idx_list.append(r_idx)
+                    raw_texts.append(r_txt)
+
+            # Process results
+            for i, top_idx in enumerate(ranked_idx_list):
+                cand_mids = candidate_mids_list[i]
+                # Map indices to MIDs
+                # cand_mids is now a list of ints/floats
+                mids = [int(cand_mids[j]) for j in top_idx]
+
+                ranked_mids_list.append(mids)
+                model_responses_list.append(raw_texts[i])
+
+                best_mid = mids[0] if mids else -1
+                pred_mids_list.append(best_mid)
+                pred_texts_list.append(
+                    item_text(best_mid, item_db) if best_mid != -1 else ""
+                )
+
+        else:
+            # Single item
+            res = predict_single_rank(batch, ranker, item_db, system_prompt)
+            ranked_mids_list.extend(res.ranked_mids_list)
+            model_responses_list.extend(res.model_responses)
+            pred_mids_list.extend(res.pred_mids)
+            pred_texts_list.extend(res.pred_texts)
+
+    n = len(pred_mids_list)
     return PredictionResult(
         pred_mids=pred_mids_list,
         pred_texts=pred_texts_list,
@@ -184,7 +227,7 @@ def predict_batch_rank(
 
 
 def predict_batch_open(
-    df: pd.DataFrame,
+    data: Union[pd.DataFrame, DataLoader, Iterable[Dict]],
     generator: Generator,
     item_db: Dict[int, Dict[str, str]],
     prompt_cfg: PromptConfig,
@@ -194,24 +237,8 @@ def predict_batch_open(
     min_sim: float = 0.65,
     progress: bool = False,
 ) -> PredictionResult:
-    """
-    Batch prediction in open-generation mode with a single generator call.
-    """
-    n = len(df)
-
-    # Build prompts for all rows first
-    prompts: List[str] = []
-    system_prompts: List[Optional[str]] = []
-    it = df.iterrows()
-    for _, row in it:
-        open_prompt = row.get("prompt_open", row.get("prompt_gen", None))
-        if open_prompt is None:
-            open_prompt = build_open_prompt(row.to_dict(), prompt_cfg)
-        prompts.append(open_prompt)
-        system_prompts.append(system_prompt)
-
-    # Single batched generation call
-    gen_lists = generator.generate_topk(prompts, system_prompts, k=prompt_cfg.k_recs, progress=progress)
+    if title_to_mid is None and catalogue_mapper is None:
+        title_to_mid = build_title_to_mid_dict(item_db)
 
     pred_mids_list: List[int] = []
     pred_texts_list: List[str] = []
@@ -220,45 +247,99 @@ def predict_batch_open(
     valid_at_k_list: List[float] = []
     model_responses_list: List[str] = []
 
-    # Prepare fallback mapping if needed
-    if title_to_mid is None and catalogue_mapper is None:
-        title_to_mid = build_title_to_mid_dict(item_db)
+    iterator = data
+    if isinstance(data, pd.DataFrame):
+        iterator = data.to_dict("records")
 
-    for i in range(n):
-        titles = gen_lists[i]
-        generated_titles_list.append(titles)
-        model_responses_list.append(json.dumps(titles, ensure_ascii=False))
+    if progress:
+        total = len(data) if hasattr(data, "__len__") else None
+        iterator = tqdm(iterator, total=total, desc="Generating")
 
-        mids: List[int] = []
-        valid_at_k = 0.0
-        pred_text = ""
+    for batch in iterator:
+        # Check if batched via tensor or list presence
+        is_batched = isinstance(batch, dict) and (
+            isinstance(batch.get("target_mid"), list)
+            or isinstance(batch.get("target_mid"), torch.Tensor)
+        )
 
-        if catalogue_mapper is not None:
-            map_res = catalogue_mapper.map_list(titles, k=prompt_cfg.k_recs, min_sim=min_sim)
-            mids = [int(m) for m in getattr(map_res, "mapped_mids", []) if m is not None]
-            valid_at_k = float(getattr(map_res, "valid_at_k", 0.0))
-            mapped_titles = getattr(map_res, "mapped_titles", [])
-            if mapped_titles and mapped_titles[0]:
-                pred_text = str(mapped_titles[0])
+        prompts = []
+        if is_batched:
+            # Calculate batch size safely
+            # Note: with optimized collate, target_mid is a Tensor
+            t_mid = batch.get("target_mid")
+            batch_size = len(t_mid)
+
+            for i in range(batch_size):
+                if "prompt_open" in batch and batch["prompt_open"][i]:
+                    prompts.append(batch["prompt_open"][i])
+                elif "prompt_gen" in batch and batch["prompt_gen"][i]:
+                    prompts.append(batch["prompt_gen"][i])
+                else:
+                    # Reconstruct row for prompt building
+                    # Convert tensor values to python scalars for string formatting
+                    row = {}
+                    for k, v in batch.items():
+                        val = v[i]
+                        if isinstance(val, torch.Tensor):
+                            val = val.item()
+                        row[k] = val
+                    prompts.append(build_open_prompt(row, prompt_cfg))
+        else:
+            if "prompt_open" in batch:
+                prompts.append(batch["prompt_open"])
+            elif "prompt_gen" in batch:
+                prompts.append(batch["prompt_gen"])
+            else:
+                prompts.append(build_open_prompt(batch, prompt_cfg))
+
+        sys_prompts = [system_prompt] * len(prompts)
+        gen_lists = generator.generate_topk(prompts, sys_prompts, k=prompt_cfg.k_recs)
+
+        for titles in gen_lists:
+            generated_titles_list.append(titles)
+            model_responses_list.append(json.dumps(titles, ensure_ascii=False))
+
+            mids: List[int] = []
+            valid_at_k = 0.0
+            pred_text = ""
+
+            if catalogue_mapper is not None:
+                map_res = catalogue_mapper.map_list(
+                    titles, k=prompt_cfg.k_recs, min_sim=min_sim
+                )
+                mids = [
+                    int(m) for m in getattr(map_res, "mapped_mids", []) if m is not None
+                ]
+                valid_at_k = float(getattr(map_res, "valid_at_k", 0.0))
+                mapped_titles = getattr(map_res, "mapped_titles", [])
+                if mapped_titles and mapped_titles[0]:
+                    pred_text = str(mapped_titles[0])
+                else:
+                    pred_text = titles[0] if titles else "UNKNOWN_GENERATION"
+            elif title_to_mid is not None:
+                for tt in titles:
+                    key = str(tt).strip().lower()
+                    mid = title_to_mid.get(key, -1)
+                    if mid != -1 and int(mid) not in mids:
+                        mids.append(int(mid))
+                valid_at_k = (
+                    float(min(len(mids), prompt_cfg.k_recs)) / float(prompt_cfg.k_recs)
+                    if prompt_cfg.k_recs
+                    else 0.0
+                )
+                pred_text = (
+                    item_text(int(mids[0]), item_db)
+                    if mids
+                    else (titles[0] if titles else "UNKNOWN_GENERATION")
+                )
             else:
                 pred_text = titles[0] if titles else "UNKNOWN_GENERATION"
-        elif title_to_mid is not None:
-            for tt in titles:
-                key = str(tt).strip().lower()
-                mid = title_to_mid.get(key, -1)
-                if mid != -1 and int(mid) not in mids:
-                    mids.append(int(mid))
-            valid_at_k = float(min(len(mids), prompt_cfg.k_recs)) / float(prompt_cfg.k_recs) if prompt_cfg.k_recs else 0.0
-            pred_text = item_text(int(mids[0]), item_db) if mids else (titles[0] if titles else "UNKNOWN_GENERATION")
-        else:
-            pred_text = titles[0] if titles else "UNKNOWN_GENERATION"
 
-        pred_mid = mids[0] if mids else -1
-
-        pred_mids_list.append(int(pred_mid))
-        pred_texts_list.append(pred_text)
-        ranked_mids_list.append(mids)
-        valid_at_k_list.append(valid_at_k)
+            pred_mid = mids[0] if mids else -1
+            pred_mids_list.append(int(pred_mid))
+            pred_texts_list.append(pred_text)
+            ranked_mids_list.append(mids)
+            valid_at_k_list.append(valid_at_k)
 
     return PredictionResult(
         pred_mids=pred_mids_list,
@@ -271,10 +352,6 @@ def predict_batch_open(
 
 
 def build_title_to_mid_dict(item_db: Dict[int, Dict[str, str]]) -> Dict[str, int]:
-    """
-    Build a normalized title->mid mapping from item database.
-    Used as fallback when catalog mapper is unavailable.
-    """
     title_to_mid: Dict[str, int] = {}
     for mid, info in item_db.items():
         title_key = str(info.get("title", "")).strip().lower()

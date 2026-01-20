@@ -1,10 +1,14 @@
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Sequence, Set, Optional, Tuple, Any
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
+import torch
+import pandas as pd
 
 
-def recall_at_k(ranked_items: Sequence[int], relevant_items: Set[int], k: int = 10) -> float:
+def recall_at_k(
+    ranked_items: Sequence[int], relevant_items: Set[int], k: int = 10
+) -> float:
     """
     Recall@K: |TopK ∩ Relevant| / |Relevant|
     For MovieLens next-item prediction, |Relevant| is usually 1.
@@ -18,7 +22,9 @@ def recall_at_k(ranked_items: Sequence[int], relevant_items: Set[int], k: int = 
     return float(hits) / float(len(relevant_items))
 
 
-def ndcg_at_k(ranked_items: Sequence[int], relevant_items: Set[int], k: int = 10) -> float:
+def ndcg_at_k(
+    ranked_items: Sequence[int], relevant_items: Set[int], k: int = 10
+) -> float:
     """
     NDCG@K with binary relevance:
       DCG = sum_{i=1..K} rel_i / log2(i+1)
@@ -64,7 +70,10 @@ def mean_recall_ndcg(
         recalls.append(recall_at_k(ranked, rel, k=k))
         ndcgs.append(ndcg_at_k(ranked, rel, k=k))
 
-    return {"Recall@%d" % k: float(np.mean(recalls)), "NDCG@%d" % k: float(np.mean(ndcgs))}
+    return {
+        "Recall@%d" % k: float(np.mean(recalls)),
+        "NDCG@%d" % k: float(np.mean(ndcgs)),
+    }
 
 
 def count_violations(scores: Sequence[float], q_alpha: float) -> int:
@@ -72,6 +81,7 @@ def count_violations(scores: Sequence[float], q_alpha: float) -> int:
     Violations count per definition: S_new > Q_alpha.
     """
     return int(np.sum(np.array(scores, dtype=np.float32) > float(q_alpha)))
+
 
 # SNSR/SNSV proxy functions.
 # NOTE: I implemented them as per FACTER's code: https://github.com/AryaFayyazi/FACTER
@@ -93,10 +103,15 @@ def _encode_texts_np(embedder: Any, texts: List[str]) -> np.ndarray:
     """
     if hasattr(embedder, "encode_texts"):
         E = embedder.encode_texts(texts)
+
     elif hasattr(embedder, "encode"):
         E = embedder.encode(texts)
+
     else:
         raise TypeError("embedder must expose encode_texts(...) or encode(...)")
+
+    if isinstance(E, torch.Tensor):
+        E = E.detach().cpu().numpy()
 
     E = np.asarray(E, dtype=np.float32)
     if E.ndim == 1:
@@ -111,7 +126,9 @@ def _l2_normalize(v: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     return v / n
 
 
-def _pool_topk_mean_embedding(embedder: Any, titles: Sequence[str], k: int) -> np.ndarray:
+def _pool_topk_mean_embedding(
+    embedder: Any, titles: Sequence[str], k: int
+) -> np.ndarray:
     """
     Authors' proxy:
       pooled embedding per example = mean of title embeddings over Top-K list.
@@ -150,36 +167,95 @@ def snsr_snsv_proxy_from_title_lists(
     if len(rec_title_lists) != len(group_keys):
         raise ValueError("rec_title_lists and group_keys must have same length")
 
-    # pooled vector per example
-    pooled = np.stack(
-        [_pool_topk_mean_embedding(embedder, titles, k=k) for titles in rec_title_lists],
-        axis=0,
-    )  # [n,d]
+    # 1. Collect all unique titles
+    all_titles = set()
+    for titles in rec_title_lists:
+        # Take top-k valid strings
+        ts = [str(t).strip() for t in list(titles)[:k] if str(t).strip()]
+        all_titles.update(ts)
 
-    # aggregate by group (mean pooled vector)
-    groups: Dict[str, List[int]] = {}
-    for i, g in enumerate(group_keys):
-        groups.setdefault(str(g), []).append(i)
+    # 2. Encode all unique titles
+    unique_titles_list = sorted(list(all_titles))
 
-    group_vecs: List[np.ndarray] = []
-    for g, idxs in groups.items():
-        if len(idxs) < min_group_size:
-            continue
-        v = np.mean(pooled[idxs], axis=0).astype(np.float32)
-        group_vecs.append(_l2_normalize(v))
+    # Edge case: no valid titles at all
+    if not unique_titles_list:
+        return SNSMetrics(SNSR=0.0, SNSV=0.0, n_groups_used=0)
 
-    n_groups = len(group_vecs)
-    if n_groups < 2:
-        return SNSMetrics(SNSR=0.0, SNSV=0.0, n_groups_used=n_groups)
+    # Add a dummy token for padding/invalid entries
+    unique_titles_list = ["<PAD>"] + unique_titles_list
 
-    G = np.stack(group_vecs, axis=0)  # [G,d], normalized
-    # cosine similarity = dot (since normalized), distance = 1 - dot
+    # [U+1, D]
+    all_embs = _encode_texts_np(embedder, unique_titles_list)
+
+    # Ensure PAD vector is zero
+    all_embs[0] = 0.0
+
+    # 3. Map titles to integer indices for vectorization
+    title_to_idx = {t: i for i, t in enumerate(unique_titles_list)}
+    # title_to_vec = {t: all_embs[i] for i, t in enumerate(unique_titles_list)}
+
+    # Construct indices matrix [N, K]
+    N = len(rec_title_lists)
+    indices = np.zeros((N, k), dtype=np.int32)  # defaults to 0 (PAD)
+
+    for i, titles in enumerate(rec_title_lists):
+        ts = [str(t).strip() for t in list(titles)[:k] if str(t).strip()]
+        for j, t in enumerate(ts):
+            if j < k:
+                indices[i, j] = title_to_idx.get(t, 0)
+
+    # 4. Gather embeddings [N, K, D] (replaces loop over N users)
+    gathered_embs = all_embs[indices]
+
+    # 5. Average pooling per user [N, D]
+    # We want to ignore PAD vectors in the mean.
+    # Count non-zero vectors along axis 1
+    # Check if index is not 0
+    valid_mask = indices != 0  # [N, K]
+    counts = valid_mask.sum(axis=1, keepdims=True)  # [N, 1]
+
+    sum_embs = gathered_embs.sum(axis=1)  # [N, D]
+
+    # Avoid divide by zero
+    counts = np.maximum(counts, 1.0)
+    pooled = sum_embs / counts  # [N, D]
+
+    # Normalize (vectorized L2 normalization)
+    norms = np.linalg.norm(pooled, axis=1, keepdims=True)
+    norms = np.maximum(norms, 1e-12)
+    pooled = pooled / norms
+
+    # 6. Aggregate by Group
+    # Use Pandas for fast groupby mean
+    df_pool = pd.DataFrame(pooled)
+    df_pool["group"] = list(group_keys)
+
+    # Filter small groups
+    g_counts = df_pool["group"].value_counts()
+    valid_groups = g_counts[g_counts >= min_group_size].index
+
+    n_valid_groups = len(valid_groups)
+    if n_valid_groups < 2:
+        return SNSMetrics(SNSR=0.0, SNSV=0.0, n_groups_used=n_valid_groups)
+
+    # Compute group means [G, D]
+    group_means = df_pool[df_pool["group"].isin(valid_groups)].groupby("group").mean()
+    G = group_means.values.astype(np.float32)
+
+    # Re-normalize group vectors
+    g_norms = np.linalg.norm(G, axis=1, keepdims=True)
+    g_norms = np.maximum(g_norms, 1e-12)
+    G = G / g_norms
+
+    # 7. Pairwise Distances
     sim = G @ G.T
     dist = 1.0 - sim
-    # take upper triangle i<j
+    n_groups = G.shape[0]
+
     dists = dist[np.triu_indices(n_groups, k=1)]
     SNSR = float(np.max(dists)) if dists.size else 0.0
     SNSV = float(np.mean(dists)) if dists.size else 0.0
+
     return SNSMetrics(SNSR=SNSR, SNSV=SNSV, n_groups_used=n_groups)
 
 
@@ -196,15 +272,13 @@ def snsr_snsv_proxy_from_mid_lists(
     Same SNSR/SNSV proxy, but recs are item IDs.
     We convert mids -> canonical titles from item_db, then use title embedding pooling.
     """
-    title_lists: List[List[str]] = []
-    for mids in rec_mid_lists:
-        titles = []
-        for mid in list(mids)[:k]:
-            info = item_db.get(int(mid), {})
-            t = str(info.get("title", "")).strip()
-            if t:
-                titles.append(t)
-        title_lists.append(titles)
+    title_lists: List[List[str]] = [
+        [
+            str(item_db.get(int(mid), {}).get("title", "")).strip()
+            for mid in list(mids)[:k]
+        ]
+        for mids in rec_mid_lists
+    ]
 
     return snsr_snsv_proxy_from_title_lists(
         rec_title_lists=title_lists,
