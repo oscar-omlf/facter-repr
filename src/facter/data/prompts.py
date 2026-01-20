@@ -88,27 +88,22 @@ def build_ranking_prompt(row: Dict, candidate_titles: List[str], cfg: PromptConf
     """
     Ranking-style prompt: ask the LLM to rank a candidate set (used for controlled evaluation).
     """
-    parts: List[str] = []
+    demo = ""
     if cfg.include_demographics:
-        parts.append(_render_demographics(row).strip())
+        demo = _render_demographics(row) + "\n"
 
-    parts.append("History (most recent last):")
-    for i, title in enumerate(row["history_titles"], start=1):
-        parts.append(f"{i}. {title}")
+    hist = "\n".join([f"{i}. {t}" for i, t in enumerate(row["history_titles"], start=1)])
+    context = f"Watch history:\n{hist}\n\n"
 
-    parts.append("")
-    parts.append(f"Candidates ({cfg.domain}s):")
-    for i, title in enumerate(candidate_titles, start=1):
-        parts.append(f"{i}. {title}")
+    cand = "\n".join([f"{i}. {t}" for i, t in enumerate(candidate_titles, start=1)])
+    candidates_block = f"Candidates ({cfg.domain}s):\n{cand}\n\n"
 
-    parts.append("")
-    parts.append(
-        f"Task: Rank the candidates from most likely to be the next preferred {cfg.domain} to least likely."
+    task = (
+        f"Task: Rank the candidates from most likely to be the next preferred {cfg.domain} to least likely, as a ranked list.\n"
+        f"Return ONLY a JSON array of exactly {cfg.k_recs} {cfg.domain} titles (strings), best-first.\n"
+        f"Output format: titles only, do not include explanations. Only rank the candidates provided; do not add new titles or repeat titles from the history.\n"
     )
-    parts.append(
-        "Output format: titles only, one title per line. Do not include explanations. Only rank the candidates provided, do not add any new titles or titles from the history."
-    )
-    return "\n".join(parts).strip()
+    return (demo + context + candidates_block + task).strip()
 
 
 def build_open_prompt(row: Dict, cfg: PromptConfig) -> str:
