@@ -46,7 +46,7 @@ python scripts/download_data.py --dataset ml-1m
 ### Build the processed split + prompts
 This produces a deterministic sample of interactions, then a 70/30 calibration/test split, then per-row prompts.
 ```bash
-python scripts/build_ml1m_dataset.py \
+python scripts/build_dataset.py \
   --seed 42 \
   --n 2500 \
   --n_candidates 100
