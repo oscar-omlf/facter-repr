@@ -450,6 +450,7 @@ def main() -> None:
                         "cfg": cfr_cfg_all,
                         "predict_mode": args.predict_mode,
                         "iter": None,
+                        "seed": args.seed,
                     }
                     if args.predict_mode == "rank":
                         cfr_kwargs_all["ranker"] = ranker
@@ -471,6 +472,7 @@ def main() -> None:
                             "cfg": cfr_cfg,
                             "predict_mode": args.predict_mode,
                             "iter": None,
+                            "seed": args.seed,
                         }
                         if args.predict_mode == "rank":
                             cfr_kwargs["ranker"] = ranker
