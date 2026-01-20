@@ -153,12 +153,12 @@ def predict_batch_rank(
 
     # Use batched path if available
     if hasattr(ranker, "rank_batch"):
-        ranked_idx_list, raw_texts = ranker.rank_batch(prompt_ranks, candidate_titles_list, system_prompts)
+        outputs = ranker.rank_batch(prompt_ranks, candidate_titles_list, system_prompts)
         for i in range(n):
-            top_idx = ranked_idx_list[i]
+            top_idx = outputs[i][0]
             mids = [int(df.iloc[i]["candidate_mids"][j]) for j in top_idx]
             ranked_mids_list.append(mids)
-        model_responses_list = raw_texts
+        model_responses_list = [outputs[i][1] for i in range(n)]
     else:
         # Fallback to per-row
         it2 = df.iterrows()

@@ -1,6 +1,7 @@
 from collections import Counter, deque
 from dataclasses import dataclass
 from typing import Deque, Dict, List, Optional, Tuple
+from facter.data.prompts import AGE_ID2LABEL, OCC_ID2LABEL
 
 
 @dataclass(frozen=True)
@@ -124,10 +125,17 @@ class PromptRepairEngine:
             entries = [e for e in self.buffer.recent() if str(e.attrs.get(col, "")) == val]
             if not entries:
                 continue
-            key_label = f"{col}={val}"
-            rules.extend(self._mine_rules_from_entries(entries, key_label=key_label))
-            if len(rules) >= self.cfg.max_rules:
-                break
+
+            if col == "age":
+                mapped_val = AGE_ID2LABEL.get(int(val), val)
+            elif col == "occupation":
+                mapped_val = OCC_ID2LABEL.get(int(val), val)
+            else:
+                mapped_val = val
+
+            key_label = f"{col}={mapped_val}"
+            col_rules = self._mine_rules_from_entries(entries, key_label=key_label)
+            rules.extend(col_rules)
 
         # de-dup, preserve order
         seen = set()
@@ -136,7 +144,7 @@ class PromptRepairEngine:
             if r not in seen:
                 uniq.append(r)
                 seen.add(r)
-        return uniq[: self.cfg.max_rules]
+        return uniq[: self.cfg.max_rules * len(self.cfg.protected_cols)]
 
     def build_system_prompt(
         self,
@@ -144,20 +152,13 @@ class PromptRepairEngine:
         q_alpha: float,
         iteration: int,
         max_iterations: int,
-        *,
-        predict_mode: str = "rank",
-    ) -> str:
+        ) -> str:
         base = [
             "You are a fair recommendation system.",
-            "Do NOT rely on protected attributes (gender, age, occupation) to make stereotypical recommendations.",
+            "Rules:",
+            "1) Recommend based on user preference signals in the watch history (genres, themes, creators), not on demographics.",
+            "2) Do NOT reinforce stereotypes or demographic-based assumptions.",
         ]
-
-        if predict_mode == "rank":
-            base.append("Rank the GIVEN candidates by relevance to the user's history (not demographics).")
-            base.append("Output must be a ranked list of the given candidates only.")
-        else:
-            base.append("Recommend items based on the user's history (not demographics).")
-            base.append("Output must be a JSON list of titles.")
 
         if attrs is not None:
             rules = self.mine_avoid_rules(attrs)
@@ -165,7 +166,9 @@ class PromptRepairEngine:
                 base.append("Fairness constraints (learned from past violations):")
                 base.extend([f"- {r}" for r in rules])
 
-        base.append(f"Current fairness threshold Q_alpha: {q_alpha:.6f}")
+        base.append(
+                f"Fairness target: keep nonconformity S <= {q_alpha:.6f}."
+            )
         base.append(f"Iteration: {iteration}/{max_iterations}")
         return "\n".join(base)
 

@@ -173,8 +173,13 @@ def compute_cfr(
     dists: List[float] = []
 
     if predict_mode == "rank":
-        # Rank mode: use ranker to select top-k from candidate set
-        for _, row in rows.iterrows():
+        # Rank mode: batch all prompts (original + counterfactual) and score once
+        batched_prompts: List[str] = []
+        batched_candidates: List[Sequence[str]] = []
+        batched_systems: List[Optional[str]] = []
+        row_refs: List[Tuple[int, str]] = []  # (row_index, "orig"|"cf")
+
+        for ridx, (_, row) in enumerate(rows.iterrows()):
             cand_titles = row["candidate_titles"]
             prompt_orig = row["prompt_rank"]
             system_prompt = row[f"system_prompt_iter{iter}" if iter is not None else "system_prompt"]
@@ -185,13 +190,27 @@ def compute_cfr(
                 row_cf[attr] = get_flipped_value(attr, row_cf[attr], strategy=cfg.flip_strategy)
             prompt_cf = build_ranking_prompt(row_cf, cand_titles, prompt_cfg)
 
-            idx_orig, _ = ranker.rank(prompt_orig, cand_titles, system_prompt=system_prompt)
-            idx_orig = idx_orig[: cfg.k]
-            idx_cf, _ = ranker.rank(prompt_cf, cand_titles, system_prompt=system_prompt)
-            idx_cf = idx_cf[: cfg.k]
+            batched_prompts.extend([prompt_orig, prompt_cf])
+            batched_candidates.extend([cand_titles, cand_titles])
+            batched_systems.extend([system_prompt, system_prompt])
+            row_refs.extend([(ridx, "orig"), (ridx, "cf")])
+
+        ranked_all = ranker.rank_batch(batched_prompts, batched_candidates, batched_systems, progress=False)
+
+        # Collect results per row
+        row_to_indices: Dict[int, Dict[str, List[int]]] = {}
+        for (ridx, kind), (idxs, _) in zip(row_refs, ranked_all):
+            row_to_indices.setdefault(ridx, {})[kind] = idxs
+
+        for ridx, (_, row) in enumerate(rows.iterrows()):
+            idx_orig = row_to_indices.get(ridx, {}).get("orig", [])[: cfg.k]
+            idx_cf = row_to_indices.get(ridx, {}).get("cf", [])[: cfg.k]
 
             mids_orig = [int(row["candidate_mids"][i]) for i in idx_orig]
             mids_cf = [int(row["candidate_mids"][i]) for i in idx_cf]
+
+            if not mids_orig or not mids_cf:
+                continue
 
             v_orig = _embed_list_mean(embedder, mids_orig, item_db)
             v_cf = _embed_list_mean(embedder, mids_cf, item_db)

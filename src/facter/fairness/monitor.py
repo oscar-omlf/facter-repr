@@ -125,7 +125,6 @@ class FACTEROnlineMonitor:
                     q_alpha=q,
                     iteration=t,
                     max_iterations=self.cfg.max_iterations,
-                    predict_mode=predict_mode,
                 )
                 
                 system_prompts_list.append(system_prompt)
