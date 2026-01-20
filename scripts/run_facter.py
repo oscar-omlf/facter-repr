@@ -361,7 +361,7 @@ def main() -> None:
                         cfg=OnlineMonitorConfig(
                             max_iterations=args.max_iterations,
                             gamma=args.gamma,
-                            protected_key=protected_cols[0],
+                            protected_key=args.protected_attr,
                         ),
                     )
 
@@ -441,7 +441,7 @@ def main() -> None:
                     baseline_metrics["SNSV"] = float(sns_b.SNSV)
 
                     # CFR for all flip attrs at the same time:
-                    cfr_cfg_all = CFRConfig(flip_attr=cfr_flips, k=args.k, flip_strategy=args.cfr_flip_strategy)
+                    cfr_cfg_all = CFRConfig(flip_attr=cfr_flips, k=args.k, flip_strategy=args.cfr_flip_strategy, seed=args.seed)
                     cfr_kwargs_all = {
                         "df": baseline_df,
                         "embedder": embedder,
@@ -450,7 +450,6 @@ def main() -> None:
                         "cfg": cfr_cfg_all,
                         "predict_mode": args.predict_mode,
                         "iter": None,
-                        "seed": args.seed,
                     }
                     if args.predict_mode == "rank":
                         cfr_kwargs_all["ranker"] = ranker
@@ -463,7 +462,7 @@ def main() -> None:
 
                     # CFR baseline: compute for each flip attr
                     for flip_attr in cfr_flips:
-                        cfr_cfg = CFRConfig(flip_attr=flip_attr, k=args.k, flip_strategy=args.cfr_flip_strategy)
+                        cfr_cfg = CFRConfig(flip_attr=flip_attr, k=args.k, flip_strategy=args.cfr_flip_strategy, seed=args.seed)
                         cfr_kwargs = {
                             "df": baseline_df,
                             "embedder": embedder,
@@ -472,7 +471,6 @@ def main() -> None:
                             "cfg": cfr_cfg,
                             "predict_mode": args.predict_mode,
                             "iter": None,
-                            "seed": args.seed,
                         }
                         if args.predict_mode == "rank":
                             cfr_kwargs["ranker"] = ranker
