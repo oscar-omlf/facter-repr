@@ -26,6 +26,8 @@ class CFRConfig:
     flip_attr: Optional[Sequence[str]] = None
     # flip strategy: "random" (uniform random from valid values) or "minimal" (adjacent/opposite values)
     flip_strategy: str = "random"
+    n_samples: int = 200
+    seed: int = 42
     
     def __post_init__(self):
         # Ensure flip_attr is always a sequence, convert str to list if needed
@@ -163,12 +165,16 @@ def compute_cfr(
         raise ValueError("rank mode requires ranker")
     if predict_mode == "open" and generator is None:
         raise ValueError("open mode requires generator")
+    
+    rows = df.sample(
+        n=min(cfg.n_samples, len(df)), replace=False, random_state=cfg.seed
+    )
 
     dists: List[float] = []
 
     if predict_mode == "rank":
         # Rank mode: use ranker to select top-k from candidate set
-        for _, row in df.iterrows():
+        for _, row in rows.iterrows():
             cand_titles = row["candidate_titles"]
             prompt_orig = row["prompt_rank"]
             system_prompt = row[f"system_prompt_iter{iter}" if iter is not None else "system_prompt"]
@@ -200,7 +206,7 @@ def compute_cfr(
         prompts_all: List[str] = []
         system_prompts_all: List[str] = []
         
-        for _, row in df.iterrows():
+        for _, row in rows.iterrows():
             system_prompt = row[f"system_prompt_iter{iter}" if iter is not None else "system_prompt"]
 
             # Original prompt
