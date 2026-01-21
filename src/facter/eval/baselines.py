@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
+import math
+from collections import defaultdict
 
 import pandas as pd
 
@@ -7,8 +9,10 @@ from facter.models.ranker import Ranker
 from facter.models.generator import Generator
 from facter.eval.metrics import mean_recall_ndcg
 from facter.eval.prediction import predict_batch_rank, predict_batch_open, build_title_to_mid_dict
+from facter.fairness.context_encoder import ContextEncoder
 from facter.eval.catalogue_map import CatalogueMapper
 from facter.data.prompts import PromptConfig
+from facter.fairness.scoring import NonconformityScorer
 
 
 @dataclass(frozen=True)
@@ -20,7 +24,10 @@ def run_zero_shot(
     df: pd.DataFrame,
     ranker: Optional[Ranker] = None,
     generator: Optional[Generator] = None,
+    scorer: Optional[NonconformityScorer] = None,
+    context_encoder: Optional[ContextEncoder] = None,
     item_db: Optional[Dict[int, Dict[str, str]]] = None,
+    neighbor_index: Optional[Any] = None,
     predict_mode: str = "rank",
     k: int = 10,
     system_prompt: str | None = None,
@@ -28,6 +35,8 @@ def run_zero_shot(
     catalogue_mapper: Optional[CatalogueMapper] = None,
     title_to_mid: Optional[Dict[str, int]] = None,
     min_sim: float = 0.65,
+    threshold: float = 1,
+    protected_cols: Optional[Sequence[str]] = None,
 ) -> pd.DataFrame:
     """
     Unified zero-shot prediction: rank or open-generation based on predict_mode.
@@ -43,6 +52,7 @@ def run_zero_shot(
     if predict_mode == "rank":
         if ranker is None:
             raise ValueError("rank mode requires ranker")
+        
         res = predict_batch_rank(df, ranker, item_db or {}, system_prompt=system_prompt, progress=progress)
         df["pred_mid"] = res.pred_mids
         df["ranked_mids"] = res.ranked_mids_list
@@ -73,6 +83,7 @@ def run_zero_shot(
         )
         
         df["pred_mid"] = res.pred_mids
+        df["pred_text"] = res.pred_texts
         df["ranked_mids"] = res.ranked_mids_list
         df["system_prompt"] = [system_prompt] * len(df)
         df["generator_response"] = res.model_responses
@@ -80,6 +91,48 @@ def run_zero_shot(
         
     else:
         raise ValueError("predict_mode must be 'rank' or 'open'")
+    
+    context_emb = context_encoder.encode_df(df)
+    neighbor_index.fit(df, context_emb)
+
+    # Calculate S score for each prediction if scorer and neighbor_index are provided
+    if scorer is not None and neighbor_index is not None and item_db is not None:
+        S, d, delta, pred_emb = scorer.compute(
+            df, 
+            pred_mid_col="pred_mid", 
+            item_db=item_db, 
+            neighbor_index=neighbor_index
+        )
+        df["s_score"] = S
+        df["d_score"] = d
+        df["delta_score"] = delta
+    
+        # Per-datapoint threshold: threshold + (C / sqrt(n)), where C counts prior violations for the same group
+        n = len(df)
+        group_violation_counts = defaultdict(int)
+        protected_cols = tuple(protected_cols or [])
+
+        adjusted_thresholds: List[float] = []
+        is_violation_flags: List[bool] = []
+
+        for _, row in df.iterrows():
+            if protected_cols:
+                key = tuple(str(row[c]) for c in protected_cols)
+            else:
+                key = ("__all__",)
+
+            C = group_violation_counts[key]
+            adj_thr = threshold + (C / math.sqrt(n) if n > 0 else 0.0)
+            is_violation = float(row["s_score"]) > adj_thr
+
+            adjusted_thresholds.append(adj_thr)
+            is_violation_flags.append(is_violation)
+
+            if is_violation:
+                group_violation_counts[key] += 1
+
+        df["adjusted_threshold"] = adjusted_thresholds
+        df["is_violation"] = is_violation_flags
     
     return df
 
