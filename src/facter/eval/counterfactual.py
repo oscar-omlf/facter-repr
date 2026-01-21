@@ -147,6 +147,7 @@ def compute_cfr(
     title_to_mid: Optional[Dict[str, int]] = None,
     min_sim: float = 0.65,
     iter: Optional[int] = None,
+    progress: bool = False,
 ) -> float:
     """
     CFR proxy via counterfactual flips:
@@ -195,7 +196,7 @@ def compute_cfr(
             batched_systems.extend([system_prompt, system_prompt])
             row_refs.extend([(ridx, "orig"), (ridx, "cf")])
 
-        ranked_all = ranker.rank_batch(batched_prompts, batched_candidates, batched_systems, progress=False)
+        ranked_all = ranker.rank_batch(batched_prompts, batched_candidates, batched_systems, progress=progress)
 
         # Collect results per row
         row_to_indices: Dict[int, Dict[str, List[int]]] = {}
@@ -245,7 +246,7 @@ def compute_cfr(
             system_prompts_all.append(system_prompt)
 
         # Single batched generation call for all prompts
-        all_titles = generator.generate_topk(prompts_all, system_prompts_all, k=cfg.k)
+        all_titles = generator.generate_topk(prompts_all, system_prompts_all, k=cfg.k, progress=progress)
 
         # Process results in pairs (original, counterfactual)
         for i in range(0, len(all_titles), 2):

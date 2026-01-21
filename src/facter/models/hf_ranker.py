@@ -146,7 +146,7 @@ class HFChatRanker:
         else:
             raise ValueError(f"Unknown torch_dtype: {dtype}")
 
-        self.tokenizer = AutoTokenizer.from_pretrained(cfg.model_id, use_fast=True, trust_remote_code=cfg.trust_remote_code)
+        self.tokenizer = AutoTokenizer.from_pretrained(cfg.model_id, use_fast=True, trust_remote_code=cfg.trust_remote_code, padding_side='left')
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
@@ -270,7 +270,7 @@ class HFChatRanker:
                 # Map parsed titles to candidate indices
                 ranked = _parse_ranking_to_indices(json_titles, candidates)
 
-                print(f"Given prompt:\n{batch_prompts[j]} system prompt: {system_prompts[j] if system_prompts[j] else ''}\nGenerated text:\n{txt}\nParsed titles:\n{json_titles}\nRanked indices:\n{ranked}\n")
+                # print(f"Given prompt:\n{batch_prompts[j]} system prompt: {system_prompts[j] if system_prompts[j] else ''}\nGenerated text:\n{txt}\nParsed titles:\n{json_titles}\nRanked indices:\n{ranked}\n")
                 
                 # Cache result
                 key, _ = cache_keys[orig_idx]

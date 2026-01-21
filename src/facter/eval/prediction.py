@@ -153,7 +153,7 @@ def predict_batch_rank(
 
     # Use batched path if available
     if hasattr(ranker, "rank_batch"):
-        outputs = ranker.rank_batch(prompt_ranks, candidate_titles_list, system_prompts)
+        outputs = ranker.rank_batch(prompt_ranks, candidate_titles_list, system_prompts, progress)
         for i in range(n):
             top_idx = outputs[i][0]
             mids = [int(df.iloc[i]["candidate_mids"][j]) for j in top_idx]
