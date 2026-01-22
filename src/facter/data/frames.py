@@ -41,6 +41,8 @@ class MovieLensFrames:
             names=["mid", "title", "genres"],
             encoding="latin-1",
         )
+        ratings = ratings[ratings["rating"] >= 4].copy()
+
 
         # Assign dataframes as class attributes
         object.__setattr__(self, "ratings", ratings)
