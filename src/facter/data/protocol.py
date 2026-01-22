@@ -1,5 +1,6 @@
+# src/facter/data/protocol.py
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -11,33 +12,62 @@ class ProtocolConfig:
     sample_interactions: int = 2500
     test_size: float = 0.30
     seed: int = 42
-    n_candidates: int = 100  # for ranking-style prompts; includes 1 positive
+
+    # Ranking-style candidate pool
+    n_candidates: int = 100  # total candidates shown to ranker
     stratify: bool = True
     protected_cols: Tuple[str, ...] = ("gender", "age", "occupation")
+    relevance_mode: str = "single"  # "single" | "future_window" | "all_future"
+    relevance_window: int = 10      # only used when relevance_mode="future_window"
+    max_pos_in_candidates: Optional[int] = None
 
 
 def _process_ml(df1: pd.DataFrame, df2: pd.DataFrame) -> pd.DataFrame:
     df = df1.merge(df2, on="uid", how="inner")
     df = df.sort_values(["uid", "timestamp"]).reset_index(drop=True)
-
     return df
 
 
 def _process_amazon(df1: pd.DataFrame, df2: pd.DataFrame, seed: int) -> pd.DataFrame:
-    # Merge + sort
     df = pd.merge(df1, df2, on="mid", how="inner")
     df = df.sort_values(["uid", "timestamp"]).reset_index(drop=True)
 
     df["timestamp"] = pd.to_numeric(df["timestamp"], errors="coerce")
     df = df.dropna(subset=["uid", "mid", "timestamp"])
 
-    # Synthesize protected attributes as the Amazon dataset doesn't have them
+    # Synthesize protected attributes (Amazon lacks them)
     rng = np.random.default_rng(seed)
     df["gender"] = rng.choice(["M", "F"], size=len(df))
     df["age"] = rng.choice([1, 18, 25, 35, 45, 50, 56], size=len(df)).astype(int)
     df["occupation"] = rng.integers(0, 21, size=len(df)).astype(str)
 
     return df
+
+
+def _compute_relevant_mids(mids: List[int], t: int, cfg: ProtocolConfig) -> List[int]:
+    """
+    Returns multi-target relevance set for position t.
+    Always includes mids[t] if available.
+    """
+    if t < 0 or t >= len(mids):
+        return []
+
+    mode = str(cfg.relevance_mode).lower().strip()
+    if mode == "single":
+        return [int(mids[t])]
+
+    if mode == "future_window":
+        w = int(cfg.relevance_window)
+        if w <= 0:
+            # fall back to single if window is invalid
+            return [int(mids[t])]
+        end = min(len(mids), t + w)
+        return [int(x) for x in mids[t:end]]
+
+    if mode == "all_future":
+        return [int(x) for x in mids[t:]]
+
+    raise ValueError(f"Unknown relevance_mode: {cfg.relevance_mode}. Expected 'single', 'future_window', or 'all_future'.")
 
 
 def build_interactions_ml(
@@ -47,15 +77,18 @@ def build_interactions_ml(
     cfg: ProtocolConfig,
 ) -> pd.DataFrame:
     """
-    Build interaction rows:
+    Build interaction rows (MovieLens):
       uid, gender, age, occupation,
       history_mids (list[int]), history_titles (list[str]),
-      target_mid (int), target_title (str)
+      target_mid (int), target_title (str),
+      relevant_mids (list[int]), relevant_titles (list[str])
 
-    For each user, sort by timestamp. For each position t, if t >= min_history,
-    history = previous min_history items, target = current item.
+    For each user:
+      for each position t >= min_history:
+        history = previous min_history items
+        target = mids[t]
+        relevant = per cfg.relevance_mode (includes target)
     """
-    # Merge + sort
     df = ratings.merge(users, on="uid", how="inner")
     df = df.sort_values(["uid", "timestamp"]).reset_index(drop=True)
 
@@ -64,22 +97,54 @@ def build_interactions_ml(
         mids = g["mid"].astype(int).tolist()
         if len(mids) <= cfg.min_history:
             continue
+
         gender = g["gender"].iloc[0]
         age = int(g["age"].iloc[0])
         occupation = int(g["occupation"].iloc[0])
 
         for t in range(cfg.min_history, len(mids)):
             hist = mids[t - cfg.min_history : t]
-            target = mids[t]
+            target = int(mids[t])
 
-            # titles
-            try:
-                hist_titles = [item_db[m]["title"] for m in hist]
-                target_title = item_db[target]["title"]
-
-            except KeyError:
-                # skip if missing in db
+            # Compute relevants (may be multi-target)
+            relevant = _compute_relevant_mids(mids, t, cfg)
+            if not relevant:
                 continue
+
+            # Titles: ensure target exists; for relevants, filter missing items conservatively
+            try:
+                hist_titles = [item_db[int(m)]["title"] for m in hist]
+                target_title = item_db[int(target)]["title"]
+            except KeyError:
+                continue
+
+            rel_titles: List[str] = []
+            rel_mids_clean: List[int] = []
+            for m in relevant:
+                info = item_db.get(int(m))
+                if info is None:
+                    continue
+                title = str(info.get("title", "")).strip()
+                if not title:
+                    continue
+                rel_mids_clean.append(int(m))
+                rel_titles.append(title)
+
+            # Guarantee the target is in relevant_mids (if it exists in item_db, it should)
+            if target not in rel_mids_clean:
+                rel_mids_clean.insert(0, target)
+                rel_titles.insert(0, target_title)
+
+            # Dedup relevants while preserving order
+            seen = set()
+            rel_mids_dedup: List[int] = []
+            rel_titles_dedup: List[str] = []
+            for m, tt in zip(rel_mids_clean, rel_titles):
+                if int(m) in seen:
+                    continue
+                seen.add(int(m))
+                rel_mids_dedup.append(int(m))
+                rel_titles_dedup.append(tt)
 
             rows.append(
                 {
@@ -91,6 +156,8 @@ def build_interactions_ml(
                     "history_titles": hist_titles,
                     "target_mid": int(target),
                     "target_title": target_title,
+                    "relevant_mids": rel_mids_dedup,
+                    "relevant_titles": rel_titles_dedup,
                 }
             )
 
@@ -100,25 +167,27 @@ def build_interactions_ml(
 def build_interactions(
     df1: pd.DataFrame,
     df2: pd.DataFrame,
-    item_db: Dict[str, Dict[str, str]],
+    item_db: Dict[int, Dict[str, str]],
     cfg: ProtocolConfig,
     dataset: str = "ml-1m",
 ) -> pd.DataFrame:
     """
-    Build interaction rows:
+    Build interaction rows (generic):
       uid, gender, age, occupation,
-      history_mids (list[str]), history_titles (list[str]),
-      target_mid (str), target_title (str)
+      history_mids (list[int]), history_titles (list[str]),
+      target_mid (int), target_title (str),
+      relevant_mids (list[int]), relevant_titles (list[str])
 
-    For each user, sort by timestamp. For each position t, if t >= min_history,
-    history = previous min_history items, target = current item.
+    dataset:
+      - "ml-1m": merges ratings/users (df1/df2)
+      - "amazon": merges ratings/metadata (df1/df2), synthesizes protected attrs
     """
-
     if dataset == "ml-1m":
         df = _process_ml(df1=df1, df2=df2)
-
     elif dataset == "amazon":
         df = _process_amazon(df1=df1, df2=df2, seed=cfg.seed)
+    else:
+        raise ValueError(f"Unknown dataset: {dataset}")
 
     rows: List[Dict] = []
     for uid, g in df.groupby("uid", sort=False):
@@ -132,16 +201,43 @@ def build_interactions(
 
         for t in range(cfg.min_history, len(mids)):
             hist = mids[t - cfg.min_history : t]
-            target = mids[t]
+            target = int(mids[t])
 
-            # titles
-            try:
-                hist_titles = [item_db[m]["title"] for m in hist]
-                target_title = item_db[target]["title"]
-
-            except KeyError:
-                # skip if missing in db
+            relevant = _compute_relevant_mids(mids, t, cfg)
+            if not relevant:
                 continue
+
+            try:
+                hist_titles = [item_db[int(m)]["title"] for m in hist]
+                target_title = item_db[int(target)]["title"]
+            except KeyError:
+                continue
+
+            rel_titles: List[str] = []
+            rel_mids_clean: List[int] = []
+            for m in relevant:
+                info = item_db.get(int(m))
+                if info is None:
+                    continue
+                title = str(info.get("title", "")).strip()
+                if not title:
+                    continue
+                rel_mids_clean.append(int(m))
+                rel_titles.append(title)
+
+            if target not in rel_mids_clean:
+                rel_mids_clean.insert(0, target)
+                rel_titles.insert(0, target_title)
+
+            seen = set()
+            rel_mids_dedup: List[int] = []
+            rel_titles_dedup: List[str] = []
+            for m, tt in zip(rel_mids_clean, rel_titles):
+                if int(m) in seen:
+                    continue
+                seen.add(int(m))
+                rel_mids_dedup.append(int(m))
+                rel_titles_dedup.append(tt)
 
             rows.append(
                 {
@@ -151,8 +247,10 @@ def build_interactions(
                     "occupation": occupation,
                     "history_mids": hist,
                     "history_titles": hist_titles,
-                    "target_mid": target,
+                    "target_mid": int(target),
                     "target_title": target_title,
+                    "relevant_mids": rel_mids_dedup,
+                    "relevant_titles": rel_titles_dedup,
                 }
             )
 
@@ -180,33 +278,26 @@ def sample_and_split(
     )
     sampled = interactions.iloc[sampled_idx].reset_index(drop=True)
 
-    # Split
     n_test = int(round(cfg.test_size * len(sampled)))
 
     if cfg.stratify:
         strata = sampled[list(cfg.protected_cols)].astype(str).agg("_".join, axis=1)
-        # If any stratum is too small, fallback to unstratified
         if strata.value_counts().min() < 2:
             cfg = ProtocolConfig(**{**cfg.__dict__, "stratify": False})
         else:
-            # stratified split by sampling within strata
             cal_parts = []
             test_parts = []
             for s, g in sampled.groupby(strata, sort=False):
                 idx = np.arange(len(g))
                 rng.shuffle(idx)
-                # proportional allocation
                 t_count = max(1, int(round(len(g) * cfg.test_size)))
                 test_parts.append(g.iloc[idx[:t_count]])
                 cal_parts.append(g.iloc[idx[t_count:]])
             cal = pd.concat(cal_parts, ignore_index=True)
             test = pd.concat(test_parts, ignore_index=True)
 
-            # Fix exact sizes if rounding drifted
             if len(test) > n_test:
-                test = test.sample(n=n_test, random_state=cfg.seed).reset_index(
-                    drop=True
-                )
+                test = test.sample(n=n_test, random_state=cfg.seed).reset_index(drop=True)
             if len(test) < n_test:
                 extra = cal.sample(n=n_test - len(test), random_state=cfg.seed)
                 test = pd.concat([test, extra], ignore_index=True)
@@ -216,7 +307,6 @@ def sample_and_split(
             test = test.sample(frac=1.0, random_state=cfg.seed).reset_index(drop=True)
             return cal, test
 
-    # Unstratified fallback
     perm = rng.permutation(len(sampled))
     test_idx = perm[:n_test]
     cal_idx = perm[n_test:]
@@ -232,29 +322,106 @@ def build_candidate_sets(
 ) -> pd.DataFrame:
     """
     Adds:
-      candidate_mids: list[str] length cfg.n_candidates (includes target_mid)
-    Strategy: sample negatives uniformly from item_pool excluding history and target.
+      candidate_mids: list[int] length cfg.n_candidates
+
+    Strategy (rank-mode):
+      - positives: from relevant_mids if present, else [target_mid]
+      - clip positives to max_pos_in_candidates (or sensible default)
+      - negatives: sample uniformly from item_pool excluding history + positives
+      - final candidate list = positives + negatives, then shuffle
+
+    Notes:
+      - This is essential if you want multi-target Recall/NDCG to be meaningful in rank mode.
+      - If cfg.relevance_mode == "single", this reduces to the original "1 positive + negatives".
     """
     rng = np.random.default_rng(cfg.seed)
+    pool = np.asarray(item_pool, dtype=np.int64)
 
-    def sample_one(history: List[str], target: str) -> List[str]:
-        banned = set(history)
-        banned.add(target)
-        # filter pool
-        allowed = [m for m in item_pool if m not in banned]
-        if len(allowed) < cfg.n_candidates - 1:
-            # fallback: allow replacement from allowed (still exclude banned)
-            negs = rng.choice(allowed, size=cfg.n_candidates - 1, replace=True).tolist()
+    def _dedup_preserve_order(xs: List[int]) -> List[int]:
+        seen = set()
+        out = []
+        for x in xs:
+            x = int(x)
+            if x in seen:
+                continue
+            seen.add(x)
+            out.append(x)
+        return out
+
+    def sample_one(history: List[int], target: int, relevant: Optional[List[int]]) -> List[int]:
+        hist_set = {int(x) for x in history}
+        target = int(target)
+
+        # positives
+        if relevant is None:
+            pos = [target]
         else:
-            negs = rng.choice(
-                allowed, size=cfg.n_candidates - 1, replace=False
-            ).tolist()
-        cand = [target] + [x for x in negs]
+            pos = [int(x) for x in relevant]
+            if target not in pos:
+                pos.insert(0, target)
+
+        # remove any positives that appear in history (rare, but safe)
+        pos = [x for x in pos if x not in hist_set]
+        pos = _dedup_preserve_order(pos)
+        if not pos:
+            pos = [target]
+
+        # decide max positives to include in candidates
+        if cfg.max_pos_in_candidates is not None:
+            max_pos = int(cfg.max_pos_in_candidates)
+        else:
+            mode = str(cfg.relevance_mode).lower().strip()
+            if mode == "single":
+                max_pos = 1
+            else:
+                # default: up to relevance_window positives, but always leave room for negatives
+                max_pos = int(max(1, min(cfg.relevance_window, cfg.n_candidates - 1)))
+
+        # always leave at least 1 slot for negatives (unless n_candidates==1)
+        if cfg.n_candidates > 1:
+            max_pos = min(max_pos, cfg.n_candidates - 1)
+        else:
+            max_pos = min(max_pos, cfg.n_candidates)
+
+        pos = pos[:max_pos]
+
+        banned = set(hist_set) | set(pos)
+
+        # sample negatives
+        n_negs = int(cfg.n_candidates - len(pos))
+        if n_negs < 0:
+            n_negs = 0
+
+        allowed = pool[~np.isin(pool, np.array(list(banned), dtype=np.int64))]
+        if len(allowed) == 0:
+            # pathological fallback: allow sampling from pool excluding history only
+            allowed = pool[~np.isin(pool, np.array(list(hist_set), dtype=np.int64))]
+
+        if len(allowed) == 0:
+            # worst-case fallback
+            negs = []
+        elif len(allowed) < n_negs:
+            negs = rng.choice(allowed, size=n_negs, replace=True).tolist()
+        else:
+            negs = rng.choice(allowed, size=n_negs, replace=False).tolist()
+
+        cand = [int(x) for x in pos] + [int(x) for x in negs]
+        # ensure exact length
+        cand = cand[: cfg.n_candidates]
         rng.shuffle(cand)
         return cand
 
     out = df.copy()
+
+    # Use relevant_mids if present, else None
+    has_relevant = "relevant_mids" in out.columns
+
     out["candidate_mids"] = out.apply(
-        lambda r: sample_one(r["history_mids"], r["target_mid"]), axis=1
+        lambda r: sample_one(
+            history=r["history_mids"],
+            target=r["target_mid"],
+            relevant=(r["relevant_mids"] if has_relevant else None),
+        ),
+        axis=1,
     )
     return out
