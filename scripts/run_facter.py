@@ -429,6 +429,22 @@ def compute_baseline_metrics(
     else:
         metrics["n_violations"] = 0
 
+    cfr_flips = _resolve_cfr_flips(args, protected_cols)
+    metrics.update(
+        _compute_cfr_metrics(
+            df=baseline_df,
+            embedder=embedder,
+            item_db=item_db,
+            prompt_cfg=prompt_cfg,
+            catalogue_mapper=catalogue_mapper,
+            title_to_mid=title_to_mid,
+            args=args,
+            cfr_flips=cfr_flips,
+            iteration=None,
+            ranker=ranker,
+            generator=generator,
+        )
+    )
     return metrics
 
 
@@ -535,6 +551,21 @@ def compute_facter_metrics(
             if col_name in out_df.columns:
                 metrics[f"iter{iteration}.ValidAtK.mean"] = float(np.mean(out_df[col_name]))
 
+    metrics.update(
+        _compute_cfr_metrics(
+            df=out_df,
+            embedder=embedder,
+            item_db=item_db,
+            prompt_cfg=prompt_cfg,
+            catalogue_mapper=catalogue_mapper,
+            title_to_mid=title_to_mid,
+            args=args,
+            cfr_flips=cfr_flips,
+            iteration=args.max_iterations,
+            ranker=ranker,
+            generator=generator,
+        )
+    )
     return metrics
 
 
