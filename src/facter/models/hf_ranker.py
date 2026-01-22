@@ -79,20 +79,18 @@ def _parse_ranking_to_indices(titles: List[str], candidate_titles: Sequence[str]
     # 1) Try numeric index format
     idxs = _try_parse_as_indices(titles, n)
     if len(idxs) >= 2:
-        # Strong signal: use numeric indices
         remaining = [i for i in range(n) if i not in idxs]
         return idxs + remaining
 
-    # 2) Title-based matching via catalogue
+    # 2) Title-based matching via normalization + substring fallback
     idxs = []
     seen = set()
-    
+
     for title_str in titles:
         title_clean = title_str.strip().strip('"').strip("'")
         if not title_clean:
             continue
 
-        # Try exact normalized match first
         nt = _normalize_title(title_clean)
         if nt in norm_to_idx:
             i = norm_to_idx[nt]
@@ -101,14 +99,17 @@ def _parse_ranking_to_indices(titles: List[str], candidate_titles: Sequence[str]
                 seen.add(i)
             continue
 
-        # Substring fallback against normalized candidates
+        # substring fallback
         for cand_norm, i in norm_to_idx.items():
-            if cand_norm and i not in seen and (cand_norm in nt or nt in cand_norm):
+            if i in seen:
+                continue
+            if cand_norm and (cand_norm in nt or nt in cand_norm):
                 idxs.append(i)
                 seen.add(i)
                 break
 
-    return idxs
+    remaining = [i for i in range(n) if i not in seen]
+    return idxs + remaining
 
 
 @dataclass(frozen=True)
