@@ -47,15 +47,25 @@ OCC_ID2LABEL = {
 
 
 def _render_demographics(row: Dict) -> str:
-    age_val = row['age']
+    age_val_raw = row.get("age", "")
+    try:
+        age_val = int(age_val_raw)
+    except Exception:
+        age_val = age_val_raw
     age_label = AGE_ID2LABEL.get(age_val, str(age_val))
-    
-    occ_val = row['occupation']
+
+    occ_val_raw = row.get("occupation", "")
+    try:
+        occ_val = int(occ_val_raw)
+    except Exception:
+        occ_val = occ_val_raw
     occ_label = OCC_ID2LABEL.get(occ_val, str(occ_val))
-    
+
+    gender = str(row.get("gender", "")).strip()
+
     return (
         f"User demographics:\n"
-        f"- gender: {row['gender']}\n"
+        f"- gender: {gender}\n"
         f"- age: {age_label}\n"
         f"- occupation: {occ_label}\n"
     )

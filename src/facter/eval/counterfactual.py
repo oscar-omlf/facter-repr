@@ -57,23 +57,25 @@ def get_flipped_value(attr: str, value, strategy: str = "random") -> str:
         raise ValueError(f"Unknown flip strategy: {strategy}")
 
 
-def get_random_protected_value(attr: str) -> str:
+def get_random_protected_value(attr: str, rng: np.random.Generator):
     """
-    Get a random valid value for a protected attribute (MovieLens):
-    - gender: random choice from [M, F]
-    - age: random choice from valid age buckets
-    - occupation: random choice from valid occupation IDs
+    Random valid value for MovieLens protected attribute.
+    Types are aligned with the rest of the pipeline:
+      - gender: str
+      - age: int
+      - occupation: int
     """
     if attr == "gender":
-        return np.random.choice(["M", "F"])
-    
+        return str(rng.choice(["M", "F"]))
+
     if attr == "age":
-        return str(np.random.choice(_ML_AGE_BUCKETS))
-    
+        return int(rng.choice(_ML_AGE_BUCKETS))
+
     if attr == "occupation":
-        return str(np.random.choice(_ML_OCC_IDS))
-    
-    return str(np.random.choice([True, False]))
+        return int(rng.choice(_ML_OCC_IDS))
+    # generic fallback
+    return rng.choice([True, False])
+
 
 
 def flip_protected_value(attr: str, value) -> str:
