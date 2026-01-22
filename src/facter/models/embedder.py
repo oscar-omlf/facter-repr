@@ -90,7 +90,6 @@ class TextEmbedder:
                 batch_size=self.cfg.batch_size,
                 convert_to_numpy=True,
                 normalize_embeddings=self.cfg.normalize,
-                show_progress_bar=self.cfg.progress,
             ).astype(np.float32)
 
             for k, vec in tqdm(zip(missing_keys, new_embs), total=len(missing_keys), desc="Caching new embeddings", leave=False, disable=not self.cfg.progress):

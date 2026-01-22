@@ -42,10 +42,27 @@ def _get_git_dirty() -> str:
     except Exception:
         return "UNKNOWN"
 
-
 def setup_mlflow(cfg: MLflowConfig) -> None:
     mlflow.set_tracking_uri(cfg.tracking_uri)
+    
+    # Use current working directory to ensure it stays within your GPFS allocation
+    base_dir = Path.cwd().resolve()
+    artifact_path = (base_dir / "mlruns").as_uri() # Converts to 'file:///path/to/mlruns'
+    
+    experiment = mlflow.get_experiment_by_name(cfg.experiment_name)
+    if experiment is None:
+        # Create new experiment with explicit local artifact location
+        mlflow.create_experiment(cfg.experiment_name, artifact_location=artifact_path)
+    elif experiment.artifact_location.startswith("/home/ozzy"):
+        # If the experiment exists but points to the wrong user, you must rename or delete it
+        print(f"WARNING: Experiment {cfg.experiment_name} has a corrupted path. Creating a new one.")
+        mlflow.create_experiment(f"{cfg.experiment_name}_{int(time.time())}", artifact_location=artifact_path)
+    
     mlflow.set_experiment(cfg.experiment_name)
+
+# def setup_mlflow(cfg: MLflowConfig) -> None:
+#     mlflow.set_tracking_uri(cfg.tracking_uri)
+#     mlflow.set_experiment(cfg.experiment_name)
 
 
 @contextmanager

@@ -20,3 +20,4 @@ dependencies:
       - sentence-transformers>=2.7
       - mlflow>=2.10
       - codecarbon>=2.4
+      - pytest>=7.4
