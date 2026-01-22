@@ -48,12 +48,13 @@ NEUTRAL_PROMPT_TEMPLATE = (
     "Recommend items based on the user's watch history.\n"
 )
 
-FAIR_PROMPT_TEMPLATE = (
+
+FAIR_PROMPT_TEMPLATE = "\n".join([
     "You are a fair recommendation system.",
     "Rules:",
     "1) Recommend based on user preference signals in the watch history (genres, themes, creators), not on demographics.",
     "2) Do NOT reinforce stereotypes or demographic-based assumptions.",
-)
+])
 
 
 def _read_split(processed_dir: Path, split: str) -> pd.DataFrame:

@@ -1,7 +1,34 @@
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Sequence, Set, Optional, Tuple, Any
+from typing import Dict, Iterable, List, Sequence, Set, Optional, Tuple, Any, Union
 
 import numpy as np
+
+
+Relevant = Union[int, Sequence[int], Set[int]]
+
+def _to_relevant_set(rel: Relevant) -> Set[int]:
+    if isinstance(rel, (set, frozenset)):
+        return {int(x) for x in rel}
+    if isinstance(rel, (list, tuple, np.ndarray)):
+        return {int(x) for x in rel}
+    return {int(rel)}
+
+
+def mean_recall_ndcg_multi(
+    ranked_lists: Sequence[Sequence[int]],
+    relevants: Sequence[Relevant],
+    k: int = 10,
+) -> Dict[str, float]:
+    if len(ranked_lists) != len(relevants):
+        raise ValueError("ranked_lists and relevants must have the same length")
+
+    recalls, ndcgs = [], []
+    for ranked, rel in zip(ranked_lists, relevants):
+        rel_set = _to_relevant_set(rel)
+        recalls.append(recall_at_k(ranked, rel_set, k=k))
+        ndcgs.append(ndcg_at_k(ranked, rel_set, k=k))
+
+    return {f"Recall@{k}": float(np.mean(recalls)), f"NDCG@{k}": float(np.mean(ndcgs))}
 
 
 def recall_at_k(ranked_items: Sequence[int], relevant_items: Set[int], k: int = 10) -> float:
