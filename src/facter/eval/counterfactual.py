@@ -78,11 +78,11 @@ def get_random_protected_value(attr: str, rng: np.random.Generator):
 
 
 
-def flip_protected_value(attr: str, value) -> str:
+def flip_protected_value(attr: str, value):
     """
     Minimal in-domain flips (MovieLens):
     - gender: M <-> F
-    - age: move to adjacent valid age bucket (never produce invalid codes)
+    - age: adjacent valid age bucket
     - occupation: (o + 1) mod 21
     """
     if attr == "gender":
@@ -97,28 +97,28 @@ def flip_protected_value(attr: str, value) -> str:
         try:
             a = int(value)
         except Exception:
-            return str(value)
+            return value
 
         if a not in _ML_AGE_BUCKETS:
-            # snap to nearest bucket
             a = min(_ML_AGE_BUCKETS, key=lambda x: abs(x - a))
 
         idx = _ML_AGE_BUCKETS.index(a)
         if idx < len(_ML_AGE_BUCKETS) - 1:
-            return str(_ML_AGE_BUCKETS[idx + 1])
+            return int(_ML_AGE_BUCKETS[idx + 1])
         else:
-            return str(_ML_AGE_BUCKETS[max(idx - 1, 0)])
+            return int(_ML_AGE_BUCKETS[max(idx - 1, 0)])
 
     if attr == "occupation":
         try:
             o = int(value)
         except Exception:
-            return str(value)
+            return value
         if o not in _ML_OCC_IDS:
             o = 0
-        return str((o + 1) % (max(_ML_OCC_IDS) + 1))
+        return int((o + 1) % (max(_ML_OCC_IDS) + 1))
 
-    return str(value)
+    return value
+
 
 
 def _embed_list_mean(embedder: TextEmbedder, mids: Sequence[int], item_db: Dict[int, Dict[str, str]]) -> np.ndarray:
@@ -151,15 +151,6 @@ def compute_cfr(
     iter: Optional[int] = None,
     progress: bool = False,
 ) -> float:
-    """
-    CFR proxy via counterfactual flips:
-      CFR = mean_{examples} || f(x,a) - f(x,a') ||_2
-    where f(.) is the mean embedding of top-k recommended items.
-
-    Supports both rank and open-generation modes:
-    - Rank mode: Uses ranker to rank candidates for original and counterfactual prompts
-    - Open mode: Uses generator to generate titles for both prompts, maps to mids via catalogue_mapper/title_to_mid
-    """
     for attr in cfg.flip_attr:
         if attr not in cfg.protected_cols:
             raise ValueError(f"flip_attr must contain only attributes from {cfg.protected_cols}, got {attr}")
@@ -168,7 +159,7 @@ def compute_cfr(
         raise ValueError("rank mode requires ranker")
     if predict_mode == "open" and generator is None:
         raise ValueError("open mode requires generator")
-    
+
     rows = df.sample(
         n=min(cfg.n_samples, len(df)), replace=False, random_state=cfg.seed
     )
@@ -176,7 +167,6 @@ def compute_cfr(
     dists: List[float] = []
 
     if predict_mode == "rank":
-        # Rank mode: batch all prompts (original + counterfactual) and score once
         batched_prompts: List[str] = []
         batched_candidates: List[Sequence[str]] = []
         batched_systems: List[Optional[str]] = []
@@ -187,7 +177,6 @@ def compute_cfr(
             prompt_orig = row["prompt_rank"]
             system_prompt = row[f"system_prompt_iter{iter}" if iter is not None else "system_prompt"]
 
-            # counterfactual prompt: flip all specified attributes
             row_cf = row.to_dict()
             for attr in cfg.flip_attr:
                 row_cf[attr] = get_flipped_value(attr, row_cf[attr], strategy=cfg.flip_strategy)
@@ -200,7 +189,6 @@ def compute_cfr(
 
         ranked_all = ranker.rank_batch(batched_prompts, batched_candidates, batched_systems, progress=progress)
 
-        # Collect results per row
         row_to_indices: Dict[int, Dict[str, List[int]]] = {}
         for (ridx, kind), (idxs, _) in zip(row_refs, ranked_all):
             row_to_indices.setdefault(ridx, {})[kind] = idxs
@@ -209,8 +197,8 @@ def compute_cfr(
             idx_orig = row_to_indices.get(ridx, {}).get("orig", [])[: cfg.k]
             idx_cf = row_to_indices.get(ridx, {}).get("cf", [])[: cfg.k]
 
-            mids_orig = [int(row["candidate_mids"][i]) for i in idx_orig]
-            mids_cf = [int(row["candidate_mids"][i]) for i in idx_cf]
+            mids_orig = [int(row["candidate_mids"][i]) for i in idx_orig] if idx_orig else []
+            mids_cf = [int(row["candidate_mids"][i]) for i in idx_cf] if idx_cf else []
 
             if not mids_orig or not mids_cf:
                 continue
@@ -220,23 +208,19 @@ def compute_cfr(
             dists.append(_l2_distance(v_orig, v_cf))
 
     elif predict_mode == "open":
-        # Open mode: use generator to produce titles, map to mids
         if title_to_mid is None and catalogue_mapper is None:
             title_to_mid = build_title_to_mid_dict(item_db)
 
-        # Collect all prompts (original and counterfactual) for batched generation
         prompts_all: List[str] = []
         system_prompts_all: List[str] = []
         
         for _, row in rows.iterrows():
             system_prompt = row[f"system_prompt_iter{iter}" if iter is not None else "system_prompt"]
 
-            # Original prompt
             prompt_orig = row.get("prompt_open", row.get("prompt_gen", None))
             if prompt_orig is None:
                 prompt_orig = build_open_prompt(row.to_dict(), prompt_cfg)
 
-            # Counterfactual prompt: flip all specified attributes
             row_cf = row.to_dict()
             for attr in cfg.flip_attr:
                 row_cf[attr] = get_flipped_value(attr, row_cf[attr], strategy=cfg.flip_strategy)
@@ -247,26 +231,21 @@ def compute_cfr(
             system_prompts_all.append(system_prompt)
             system_prompts_all.append(system_prompt)
 
-        # Single batched generation call for all prompts
         all_titles = generator.generate_topk(prompts_all, system_prompts_all, k=cfg.k, progress=progress)
 
-        # Process results in pairs (original, counterfactual)
         for i in range(0, len(all_titles), 2):
             titles_orig = all_titles[i]
             titles_cf = all_titles[i + 1]
 
-            # Map to mids
             mids_orig: List[int] = []
             mids_cf: List[int] = []
 
             if catalogue_mapper is not None:
-                # Use embedding-based mapper
                 map_res_orig = catalogue_mapper.map_list(titles_orig, k=cfg.k, min_sim=min_sim)
                 mids_orig = [int(m) for m in getattr(map_res_orig, "mapped_mids", []) if m is not None]
                 map_res_cf = catalogue_mapper.map_list(titles_cf, k=cfg.k, min_sim=min_sim)
                 mids_cf = [int(m) for m in getattr(map_res_cf, "mapped_mids", []) if m is not None]
             elif title_to_mid is not None:
-                # Use normalized dict mapping
                 for tt in titles_orig:
                     key = str(tt).strip().lower()
                     mid = title_to_mid.get(key, -1)
@@ -278,7 +257,6 @@ def compute_cfr(
                     if mid != -1 and int(mid) not in mids_cf:
                         mids_cf.append(int(mid))
 
-            # Compute distance if we have valid mids
             if mids_orig and mids_cf:
                 v_orig = _embed_list_mean(embedder, mids_orig, item_db)
                 v_cf = _embed_list_mean(embedder, mids_cf, item_db)
@@ -288,4 +266,3 @@ def compute_cfr(
         raise ValueError("predict_mode must be 'rank' or 'open'")
 
     return float(np.mean(dists)) if dists else 0.0
-

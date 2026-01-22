@@ -118,10 +118,25 @@ class HFOpenGenerator:
         self._model_cache_dir = self.cfg.cache_dir / _sha256(cfg.model_id)[:16]
         self._model_cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def _cache_key(self, prompt_rank: str, system_prompt: Optional[str]) -> str:
+    # def _cache_key(self, prompt_rank: str, system_prompt: Optional[str]) -> str:
+    #     blob = {
+    #         "system": system_prompt or "",
+    #         "user": prompt_rank,
+    #     }
+    #     return _sha256(json.dumps(blob, ensure_ascii=False, sort_keys=True))
+    
+    def _cache_key(self, prompts: Sequence[str], system_prompts: Sequence[Optional[str]], k: int) -> str:
         blob = {
-            "system": system_prompt or "",
-            "user": prompt_rank,
+            "model_id": self.cfg.model_id,
+            "gen_cfg": {
+                "max_new_tokens": int(self.cfg.max_new_tokens),
+                "temperature": float(self.cfg.temperature),
+                "top_p": float(self.cfg.top_p),
+                "repetition_penalty": float(self.cfg.repetition_penalty),
+            },
+            "system": [s or "" for s in system_prompts],
+            "user": list(prompts),
+            "k": int(k),
         }
         return _sha256(json.dumps(blob, ensure_ascii=False, sort_keys=True))
 
@@ -139,7 +154,7 @@ class HFOpenGenerator:
         if len(prompts) != len(system_prompts):
             raise ValueError("prompts and system_prompts must have the same length")
         
-        key = self._cache_key(prompts, system_prompts)
+        key = self._cache_key(prompts, system_prompts, k)
         cpath = self._cache_path(key)
         
         if cpath.exists():

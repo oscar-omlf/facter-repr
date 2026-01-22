@@ -162,8 +162,23 @@ class HFChatRanker:
         self._model_cache_dir = self.cfg.cache_dir / _sha256(cfg.model_id)[:16]
         self._model_cache_dir.mkdir(parents=True, exist_ok=True)
 
+    # def _cache_key(self, prompt_rank: str, candidate_titles: Sequence[str], system_prompt: Optional[str]) -> str:
+    #     blob = {
+    #         "system": system_prompt or "",
+    #         "user": prompt_rank,
+    #         "candidates": list(candidate_titles),
+    #     }
+    #     return _sha256(json.dumps(blob, ensure_ascii=False, sort_keys=True))
+    
     def _cache_key(self, prompt_rank: str, candidate_titles: Sequence[str], system_prompt: Optional[str]) -> str:
         blob = {
+            "model_id": self.cfg.model_id,
+            "rank_cfg": {
+                "max_new_tokens": int(self.cfg.max_new_tokens),
+                "temperature": float(self.cfg.temperature),
+                "top_p": float(self.cfg.top_p),
+                "repetition_penalty": float(self.cfg.repetition_penalty),
+            },
             "system": system_prompt or "",
             "user": prompt_rank,
             "candidates": list(candidate_titles),

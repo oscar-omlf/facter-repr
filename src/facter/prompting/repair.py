@@ -92,13 +92,13 @@ class PromptRepairEngine:
         Returns a list of Avoid rules to inject for the CURRENT user.
 
         keying="tuple":
-          - filter buffer entries where ALL protected_cols match current_attrs
+        - filter buffer entries where ALL protected_cols match current_attrs
 
         keying="per_attr":
-          - for each col in protected_cols:
-              filter entries where attrs[col] == current_attrs[col]
-              mine frequent features and emit Avoid rules keyed by that single attr
-          - NOTE: buffer size still counts violations (not attrs), so no 3x growth.
+        - for each col in protected_cols:
+            filter entries where attrs[col] == current_attrs[col]
+            mine frequent features and emit Avoid rules keyed by that single attr
+        - NOTE: buffer size still counts violations (not attrs), so no 3x growth.
         """
         current_attrs = {k: str(v) for k, v in (current_attrs or {}).items()}
         if not current_attrs:
@@ -127,9 +127,15 @@ class PromptRepairEngine:
                 continue
 
             if col == "age":
-                mapped_val = AGE_ID2LABEL.get(int(val), val)
+                try:
+                    mapped_val = AGE_ID2LABEL.get(int(val), val)
+                except Exception:
+                    mapped_val = val
             elif col == "occupation":
-                mapped_val = OCC_ID2LABEL.get(int(val), val)
+                try:
+                    mapped_val = OCC_ID2LABEL.get(int(val), val)
+                except Exception:
+                    mapped_val = val
             else:
                 mapped_val = val
 
@@ -144,6 +150,8 @@ class PromptRepairEngine:
             if r not in seen:
                 uniq.append(r)
                 seen.add(r)
+        return uniq[: self.cfg.max_rules * len(self.cfg.protected_cols)]
+
         return uniq[: self.cfg.max_rules * len(self.cfg.protected_cols)]
 
     def build_system_prompt(
