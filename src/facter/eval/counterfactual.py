@@ -77,7 +77,6 @@ def get_random_protected_value(attr: str):
     return np.random.choice([True, False])
 
 
-
 def flip_protected_value(attr: str, value):
     """
     Minimal in-domain flips (MovieLens):

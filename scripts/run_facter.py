@@ -374,26 +374,37 @@ def compute_baseline_metrics(
     ranker: HFChatRanker,
     generator: HFOpenGenerator | None,
 ) -> Dict[str, float]:
-    # Keep any other baseline metrics you already compute in evaluate_zero_shot
     metrics = evaluate_zero_shot(baseline_df, k=args.k)
 
-    if "relevant_mids" in baseline_df.columns:
-        relevants = baseline_df["relevant_mids"].tolist()
-    else:
-        relevants = baseline_df["target_mid"].astype(int).tolist()
-
+    # Decide which recommendation lists to score
     if "ranked_mids" in baseline_df.columns:
         ranked_lists = baseline_df["ranked_mids"].tolist()
     elif "generated_mids" in baseline_df.columns:
         ranked_lists = baseline_df["generated_mids"].tolist()
     else:
-        # last-resort: try any common name you might have used
         raise KeyError("baseline_df must contain 'ranked_mids' or 'generated_mids' for Recall/NDCG computation.")
 
-    m = mean_recall_ndcg_multi(ranked_lists, relevants, k=args.k)
-    # store in same naming convention as rest of your pipeline
-    metrics[f"Recall@{args.k}"] = float(m[f"Recall@{args.k}"])
-    metrics[f"NDCG@{args.k}"] = float(m[f"NDCG@{args.k}"])
+    targets_single = baseline_df["target_mid"].astype(int).tolist()
+    m_single = mean_recall_ndcg_multi(ranked_lists, targets_single, k=args.k)
+    metrics[f"Recall@{args.k}.single"] = float(m_single[f"Recall@{args.k}"])
+    metrics[f"NDCG@{args.k}.single"] = float(m_single[f"NDCG@{args.k}"])
+
+    if "relevant_mids" in baseline_df.columns:
+        relevants_multi = baseline_df["relevant_mids"].tolist()
+        m_multi = mean_recall_ndcg_multi(ranked_lists, relevants_multi, k=args.k)
+        metrics[f"Recall@{args.k}.multi"] = float(m_multi[f"Recall@{args.k}"])
+        metrics[f"NDCG@{args.k}.multi"] = float(m_multi[f"NDCG@{args.k}"])
+        try:
+            metrics["RelevantSetSize.mean"] = float(np.mean([len(x) for x in relevants_multi]))
+        except Exception:
+            pass
+    else:
+        metrics[f"Recall@{args.k}.multi"] = metrics[f"Recall@{args.k}.single"]
+        metrics[f"NDCG@{args.k}.multi"] = metrics[f"NDCG@{args.k}.single"]
+        metrics["RelevantSetSize.mean"] = 1.0
+
+    metrics[f"Recall@{args.k}"] = metrics[f"Recall@{args.k}.multi"]
+    metrics[f"NDCG@{args.k}"] = metrics[f"NDCG@{args.k}.multi"]
 
     if args.predict_mode == "open" and "valid_at_k" in baseline_df.columns:
         metrics["ValidAtK.mean"] = float(np.mean(baseline_df["valid_at_k"]))
@@ -401,10 +412,9 @@ def compute_baseline_metrics(
     group_keys = baseline_df[list(protected_cols)].astype(str).apply(
         lambda r: "|".join([f"{c}={r[c]}" for c in protected_cols]), axis=1,
     ).tolist()
-    rec_lists = ranked_lists
 
     sns = snsr_snsv_proxy_from_mid_lists(
-        rec_mid_lists=rec_lists,
+        rec_mid_lists=ranked_lists,
         group_keys=group_keys,
         embedder=embedder,
         item_db=item_db,
@@ -413,25 +423,12 @@ def compute_baseline_metrics(
     )
     metrics["SNSR"] = float(sns.SNSR)
     metrics["SNSV"] = float(sns.SNSV)
-    metrics["n_violations"] = int(np.sum(baseline_df["is_violation"].to_numpy(dtype=bool))) if "is_violation" in baseline_df.columns else 0
 
-    if False:
-        cfr_flips = _resolve_cfr_flips(args, protected_cols)
-        metrics.update(
-            _compute_cfr_metrics(
-                df=baseline_df,
-                embedder=embedder,
-                item_db=item_db,
-                prompt_cfg=prompt_cfg,
-                catalogue_mapper=catalogue_mapper,
-                title_to_mid=title_to_mid,
-                args=args,
-                cfr_flips=cfr_flips,
-                iteration=None,
-                ranker=ranker,
-                generator=generator,
-            )
-        )
+    if "is_violation" in baseline_df.columns:
+        metrics["n_violations"] = int(np.sum(baseline_df["is_violation"].to_numpy(dtype=bool)))
+    else:
+        metrics["n_violations"] = 0
+
     return metrics
 
 
@@ -479,11 +476,16 @@ def compute_facter_metrics(
 ) -> Dict[str, float]:
     metrics: Dict[str, float] = {}
 
-    # Multi-target if available; else single-target fallback.
-    if "relevant_mids" in out_df.columns:
-        relevants = out_df["relevant_mids"].tolist()
+    targets_single = out_df["target_mid"].astype(int).tolist()
+    relevants_multi = out_df["relevant_mids"].tolist() if "relevant_mids" in out_df.columns else None
+
+    if relevants_multi is not None:
+        try:
+            metrics["RelevantSetSize.mean"] = float(np.mean([len(x) for x in relevants_multi]))
+        except Exception:
+            metrics["RelevantSetSize.mean"] = 1.0
     else:
-        relevants = out_df["target_mid"].astype(int).tolist()
+        metrics["RelevantSetSize.mean"] = 1.0
 
     group_keys = out_df[list(protected_cols)].astype(str).apply(
         lambda r: "|".join([f"{c}={r[c]}" for c in protected_cols]), axis=1,
@@ -496,12 +498,26 @@ def compute_facter_metrics(
             else out_df[f"generated_mids_iter{iteration}"].tolist()
         )
 
-        m = mean_recall_ndcg_multi(ranked_lists, relevants, k=args.k)
-        v = int(np.sum(out_df[f"is_violation_iter{iteration}"].to_numpy(dtype=bool)))
+        m_single = mean_recall_ndcg_multi(ranked_lists, targets_single, k=args.k)
+        metrics[f"iter{iteration}.Recall{args.k}.single"] = float(m_single[f"Recall@{args.k}"])
+        metrics[f"iter{iteration}.NDCG{args.k}.single"] = float(m_single[f"NDCG@{args.k}"])
 
+        if relevants_multi is not None:
+            m_multi = mean_recall_ndcg_multi(ranked_lists, relevants_multi, k=args.k)
+            metrics[f"iter{iteration}.Recall{args.k}.multi"] = float(m_multi[f"Recall@{args.k}"])
+            metrics[f"iter{iteration}.NDCG{args.k}.multi"] = float(m_multi[f"NDCG@{args.k}"])
+            # Headline = multi-target
+            metrics[f"iter{iteration}.Recall{args.k}"] = metrics[f"iter{iteration}.Recall{args.k}.multi"]
+            metrics[f"iter{iteration}.NDCG{args.k}"] = metrics[f"iter{iteration}.NDCG{args.k}.multi"]
+        else:
+            metrics[f"iter{iteration}.Recall{args.k}.multi"] = metrics[f"iter{iteration}.Recall{args.k}.single"]
+            metrics[f"iter{iteration}.NDCG{args.k}.multi"] = metrics[f"iter{iteration}.NDCG{args.k}.single"]
+            # Headline = single-target
+            metrics[f"iter{iteration}.Recall{args.k}"] = metrics[f"iter{iteration}.Recall{args.k}.single"]
+            metrics[f"iter{iteration}.NDCG{args.k}"] = metrics[f"iter{iteration}.NDCG{args.k}.single"]
+
+        v = int(np.sum(out_df[f"is_violation_iter{iteration}"].to_numpy(dtype=bool)))
         metrics[f"iter{iteration}.violations"] = float(v)
-        metrics[f"iter{iteration}.Recall{args.k}"] = float(m[f"Recall@{args.k}"])
-        metrics[f"iter{iteration}.NDCG{args.k}"] = float(m[f"NDCG@{args.k}"])
 
         sns = snsr_snsv_proxy_from_mid_lists(
             rec_mid_lists=ranked_lists,
@@ -519,22 +535,6 @@ def compute_facter_metrics(
             if col_name in out_df.columns:
                 metrics[f"iter{iteration}.ValidAtK.mean"] = float(np.mean(out_df[col_name]))
 
-    if False:
-        metrics.update(
-            _compute_cfr_metrics(
-                df=out_df,
-                embedder=embedder,
-                item_db=item_db,
-                prompt_cfg=prompt_cfg,
-                catalogue_mapper=catalogue_mapper,
-                title_to_mid=title_to_mid,
-                args=args,
-                cfr_flips=cfr_flips,
-                iteration=args.max_iterations,
-                ranker=ranker,
-                generator=generator,
-            )
-        )
     return metrics
 
 
