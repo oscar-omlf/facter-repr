@@ -19,7 +19,7 @@ from facter.data.prompts import PromptConfig
 from facter.eval.baselines import evaluate_zero_shot, run_zero_shot
 from facter.eval.catalogue_map import CatalogueMapper
 from facter.eval.counterfactual import CFRConfig, compute_cfr
-from facter.eval.metrics import mean_recall_ndcg, snsr_snsv_proxy_from_mid_lists
+from facter.eval.metrics import mean_recall_ndcg, mean_recall_ndcg_multi, snsr_snsv_proxy_from_mid_lists
 from facter.fairness.calibration import OfflineCalibConfig, OfflineCalibrator
 from facter.fairness.context_encoder import ContextEncoder, ContextEncodingConfig
 from facter.fairness.monitor import FACTEROnlineMonitor, OnlineMonitorConfig
@@ -374,14 +374,35 @@ def compute_baseline_metrics(
     ranker: HFChatRanker,
     generator: HFOpenGenerator | None,
 ) -> Dict[str, float]:
+    # Keep any other baseline metrics you already compute in evaluate_zero_shot
     metrics = evaluate_zero_shot(baseline_df, k=args.k)
+
+    if "relevant_mids" in baseline_df.columns:
+        relevants = baseline_df["relevant_mids"].tolist()
+    else:
+        relevants = baseline_df["target_mid"].astype(int).tolist()
+
+    if "ranked_mids" in baseline_df.columns:
+        ranked_lists = baseline_df["ranked_mids"].tolist()
+    elif "generated_mids" in baseline_df.columns:
+        ranked_lists = baseline_df["generated_mids"].tolist()
+    else:
+        # last-resort: try any common name you might have used
+        raise KeyError("baseline_df must contain 'ranked_mids' or 'generated_mids' for Recall/NDCG computation.")
+
+    m = mean_recall_ndcg_multi(ranked_lists, relevants, k=args.k)
+    # store in same naming convention as rest of your pipeline
+    metrics[f"Recall@{args.k}"] = float(m[f"Recall@{args.k}"])
+    metrics[f"NDCG@{args.k}"] = float(m[f"NDCG@{args.k}"])
+
     if args.predict_mode == "open" and "valid_at_k" in baseline_df.columns:
         metrics["ValidAtK.mean"] = float(np.mean(baseline_df["valid_at_k"]))
 
     group_keys = baseline_df[list(protected_cols)].astype(str).apply(
         lambda r: "|".join([f"{c}={r[c]}" for c in protected_cols]), axis=1,
     ).tolist()
-    rec_lists = baseline_df["ranked_mids"].tolist()
+    rec_lists = ranked_lists
+
     sns = snsr_snsv_proxy_from_mid_lists(
         rec_mid_lists=rec_lists,
         group_keys=group_keys,
@@ -392,7 +413,7 @@ def compute_baseline_metrics(
     )
     metrics["SNSR"] = float(sns.SNSR)
     metrics["SNSV"] = float(sns.SNSV)
-    metrics["n_violations"] = sum(baseline_df["is_violation"])
+    metrics["n_violations"] = int(np.sum(baseline_df["is_violation"].to_numpy(dtype=bool))) if "is_violation" in baseline_df.columns else 0
 
     cfr_flips = _resolve_cfr_flips(args, protected_cols)
     metrics.update(
@@ -456,7 +477,13 @@ def compute_facter_metrics(
     generator: HFOpenGenerator | None,
 ) -> Dict[str, float]:
     metrics: Dict[str, float] = {}
-    targets = out_df["target_mid"].astype(int).tolist()
+
+    # Multi-target if available; else single-target fallback.
+    if "relevant_mids" in out_df.columns:
+        relevants = out_df["relevant_mids"].tolist()
+    else:
+        relevants = out_df["target_mid"].astype(int).tolist()
+
     group_keys = out_df[list(protected_cols)].astype(str).apply(
         lambda r: "|".join([f"{c}={r[c]}" for c in protected_cols]), axis=1,
     ).tolist()
@@ -468,12 +495,12 @@ def compute_facter_metrics(
             else out_df[f"generated_mids_iter{iteration}"].tolist()
         )
 
-        m = mean_recall_ndcg(ranked_lists, targets, k=args.k)
-        v = int(np.sum(out_df[f"is_violation_iter{iteration}"].to_numpy()))
+        m = mean_recall_ndcg_multi(ranked_lists, relevants, k=args.k)
+        v = int(np.sum(out_df[f"is_violation_iter{iteration}"].to_numpy(dtype=bool)))
 
         metrics[f"iter{iteration}.violations"] = float(v)
-        metrics[f"iter{iteration}.Recall{args.k}"] = m[f"Recall@{args.k}"]
-        metrics[f"iter{iteration}.NDCG{args.k}"] = m[f"NDCG@{args.k}"]
+        metrics[f"iter{iteration}.Recall{args.k}"] = float(m[f"Recall@{args.k}"])
+        metrics[f"iter{iteration}.NDCG{args.k}"] = float(m[f"NDCG@{args.k}"])
 
         sns = snsr_snsv_proxy_from_mid_lists(
             rec_mid_lists=ranked_lists,
@@ -507,6 +534,7 @@ def compute_facter_metrics(
         )
     )
     return metrics
+
 
 
 def save_outputs(processed_dir: Path, args: argparse.Namespace, pset: str, out_df: pd.DataFrame):
