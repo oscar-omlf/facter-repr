@@ -47,9 +47,21 @@ python scripts/download_data.py --dataset ml-1m
 This produces a deterministic sample of interactions, then a 70/30 calibration/test split, then per-row prompts.
 ```bash
 python scripts/build_dataset.py \
-  --seed 42 \
+  --dataset ml-1m \
+  --seed 0 \
   --n 2500 \
-  --n_candidates 100
+  --n_candidates 100 \
+  --relevance_mode future_window \
+  --relevance_window 10
+```
+```
+python scripts/build_dataset.py \
+  --dataset amazon \
+  --seed 0 \
+  --n 3750 \
+  --n_candidates 100 \
+  --relevance_mode future_window \
+  --relevance_window 10
 ```
 
 Outputs:
@@ -65,10 +77,12 @@ python scripts/run_facter.py \
    --model_id meta-llama/Meta-Llama-3-8B-Instruct \
    --seed 42 \
    --protected_attrs gender,age,occupation \
-   --max_iterations 3 \
+   --max_iterations 5 \
    --progress \
    --predict_mode open \
-   --datasets ml-1m,amazon
+   --datasets ml-1m,amazon \
+   --baseline_prompts both \
+   --batch_size 32
 ```
 
 This will:
@@ -95,7 +109,7 @@ This repo logs:
 
 To inspect runs:
 ```bash
-mlflow ui --backend-store-uri sqlite:///./mlflow.db
+mlflow ui --backend-store-uri "sqlite:///./mlflow.db"
 ```
 
 ## Caching and performance notes
