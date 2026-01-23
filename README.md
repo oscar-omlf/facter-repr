@@ -75,7 +75,7 @@ You must provide a Hugging Face `model_id` for the LLM ranker. Example:
 ```bash
 python scripts/run_facter.py \
    --model_id meta-llama/Meta-Llama-3-8B-Instruct \
-   --seed 42 \
+   --seeds 0 \
    --protected_attrs gender,age,occupation \
    --max_iterations 5 \
    --progress \

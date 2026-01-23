@@ -239,12 +239,13 @@ def load_item_db(dataset_name: str) -> Tuple[Dict[int, Dict[str, str]], str, Dic
     return item_db, domain, title_to_mid
 
 
-def init_models(args: argparse.Namespace, device: str):
+def init_models(args: argparse.Namespace, device: str, dataset_name: str) -> Tuple[TextEmbedder, HFChatRanker, HFOpenGenerator | None]:
     embedder = TextEmbedder(
         EmbedderConfig(
             model_name="JJTsao/fine-tuned_movie_retriever-all-mpnet-base-v2",
             device=device,
             progress=args.progress,
+            cache_dir=Path(f"data/cache/embeddings/{dataset_name}"),
         )
     )
 
@@ -660,7 +661,7 @@ def run_for_dataset(
             log_metrics({"data.items_n": float(len(item_db))})
 
         with stage("init_models", timings):
-            embedder, ranker, generator = init_models(args, device)
+            embedder, ranker, generator = init_models(args, device, dataset_name=dataset_name)
 
         with stage("build_catalogue_mapper", timings):
             catalogue_mapper = build_catalogue(embedder, item_db)
@@ -878,18 +879,19 @@ def main() -> None:
     base_attrs, protected_sets = parse_protected_sets(args)
     seeds = parse_seeds(args.seeds)
 
-    for seed in seeds:
-        seed_args = argparse.Namespace(**vars(args))
-        seed_args.seed = seed
-        total_t0 = time.perf_counter()
+    total_t0 = time.perf_counter()
 
+    for dataset_name in datasets:
         print(f"\n\n{'#'*80}")
-        print(f"Running seed: {seed}")
+        print(f"Processing dataset: {dataset_name.upper()}")
         print(f"{'#'*80}")
 
-        for dataset_name in datasets:
+        for seed in seeds:
+            seed_args = argparse.Namespace(**vars(args))
+            seed_args.seed = seed
+
             print(f"\n\n{'='*80}")
-            print(f"Processing dataset: {dataset_name.upper()}")
+            print(f"Running seed: {seed}")
             print(f"{'='*80}\n")
             run_for_dataset(dataset_name, seed_args, device, base_attrs, protected_sets, total_t0)
 
