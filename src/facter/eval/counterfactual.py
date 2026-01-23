@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -13,6 +13,8 @@ from facter.models.embedder import TextEmbedder
 from facter.models.generator import Generator
 from facter.models.ranker import Ranker
 
+if TYPE_CHECKING:
+    from facter.models.item_embedder import ItemEmbedder
 
 _ML_AGE_BUCKETS = sorted(AGE_ID2LABEL.keys())   # [1, 18, 25, 35, 45, 50, 56]
 _ML_OCC_IDS = sorted(OCC_ID2LABEL.keys())       # [0..20]
@@ -120,9 +122,21 @@ def flip_protected_value(attr: str, value):
 
 
 
-def _embed_list_mean(embedder: TextEmbedder, mids: Sequence[int], item_db: Dict[int, Dict[str, str]]) -> np.ndarray:
-    texts = [item_text(int(m), item_db) for m in mids]
-    embs = embedder.encode_texts(texts)  # [K,D], normalized
+def _embed_list_mean(
+    embedder: TextEmbedder, 
+    mids: Sequence[int], 
+    item_db: Dict[int, Dict[str, str]],
+    item_embedder: Optional["ItemEmbedder"] = None
+) -> np.ndarray:
+    """Embed list of item mids and return normalized mean embedding."""
+    if item_embedder is not None:
+        # Use pre-computed item embeddings
+        embs = item_embedder.get_embeddings(mids)  # [K,D], normalized
+    else:
+        # Fall back to text-based embedding
+        texts = [item_text(int(m), item_db) for m in mids]
+        embs = embedder.encode_texts(texts)  # [K,D], normalized
+    
     v = np.mean(embs, axis=0).astype(np.float32)
     # normalize mean vector to compare with cosine/dot
     n = np.linalg.norm(v)
@@ -149,6 +163,7 @@ def compute_cfr(
     min_sim: float = 0.65,
     iter: Optional[int] = None,
     progress: bool = False,
+    item_embedder: Optional["ItemEmbedder"] = None,
 ) -> float:
     for attr in cfg.flip_attr:
         if attr not in cfg.protected_cols:
@@ -202,8 +217,8 @@ def compute_cfr(
             if not mids_orig or not mids_cf:
                 continue
 
-            v_orig = _embed_list_mean(embedder, mids_orig, item_db)
-            v_cf = _embed_list_mean(embedder, mids_cf, item_db)
+            v_orig = _embed_list_mean(embedder, mids_orig, item_db, item_embedder)
+            v_cf = _embed_list_mean(embedder, mids_cf, item_db, item_embedder)
             dists.append(_l2_distance(v_orig, v_cf))
 
     elif predict_mode == "open":
@@ -257,8 +272,8 @@ def compute_cfr(
                         mids_cf.append(int(mid))
 
             if mids_orig and mids_cf:
-                v_orig = _embed_list_mean(embedder, mids_orig, item_db)
-                v_cf = _embed_list_mean(embedder, mids_cf, item_db)
+                v_orig = _embed_list_mean(embedder, mids_orig, item_db, item_embedder)
+                v_cf = _embed_list_mean(embedder, mids_cf, item_db, item_embedder)
                 dists.append(_l2_distance(v_orig, v_cf))
 
     else:

@@ -29,6 +29,7 @@ from facter.fairness.scoring import NonconformityScorer, ScoreConfig
 from facter.models.embedder import EmbedderConfig, TextEmbedder
 from facter.models.hf_generator import HFGenConfig, HFOpenGenerator
 from facter.models.hf_ranker import HFChatRanker, HFChatRankerConfig
+from facter.models.item_embedder import ItemEmbedder
 from facter.prompting.repair import PromptRepairConfig, PromptRepairEngine
 from facter.tracking.mlflow import (
     MLflowConfig,
@@ -89,6 +90,12 @@ def stage(name: str, timings: dict, log_to_mlflow: bool = True):
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument(
+        "--seeds",
+        type=str,
+        default="42",
+        help="Comma-separated list of seeds to loop over (default: 42).",
+    )
+    p.add_argument(
         "--datasets",
         type=str,
         default="ml-1m",
@@ -96,7 +103,6 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--processed_dir_template", type=str, default="data/processed/{dataset}")
     p.add_argument("--model_id", type=str, required=True)
-    p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
     p.add_argument("--progress", action="store_true")
     p.add_argument("--alpha", type=float, default=0.10)
@@ -170,6 +176,13 @@ def parse_datasets(raw: str) -> List[str]:
         if ds not in ["ml-1m", "amazon"]:
             raise ValueError(f"Unknown dataset: {ds}. Allowed: ml-1m, amazon")
     return datasets
+
+
+def parse_seeds(raw: str) -> List[int]:
+    seeds = [int(s) for s in raw.split(",") if s.strip()]
+    if not seeds:
+        raise ValueError("Provide at least one seed via --seeds (comma-separated).")
+    return seeds
 
 
 def parse_protected_sets(args: argparse.Namespace) -> Tuple[List[str], List[Tuple[str, ...]]]:
@@ -264,11 +277,13 @@ def run_baseline(
     title_to_mid: Dict[str, int],
     cal_q_alpha0: float,
     system_prompt: str,
+    item_embedder: ItemEmbedder,
 ) -> pd.DataFrame:
 
     baseline_scorer = NonconformityScorer(
         embedder=embedder,
         cfg=ScoreConfig(lambda_fairness=args.lambda_fairness, tau_rho=args.tau_rho),
+        item_embedder=item_embedder,
     )
 
     neighbor_cfg = NeighborConfig(protected_cols=list(protected_cols), tau_rho=args.tau_rho)
@@ -319,6 +334,7 @@ def _compute_cfr_metrics(
     iteration: int | None,
     ranker: HFChatRanker | None,
     generator: HFOpenGenerator | None,
+    item_embedder: ItemEmbedder,
 ) -> Dict[str, float]:
     metrics: Dict[str, float] = {}
     cfg_all = CFRConfig(flip_attr=cfr_flips, k=args.k, flip_strategy=args.cfr_flip_strategy, seed=args.seed)
@@ -331,6 +347,7 @@ def _compute_cfr_metrics(
         "predict_mode": args.predict_mode,
         "iter": iteration,
         "progress": args.progress,
+        "item_embedder": item_embedder,
     }
     if args.predict_mode == "rank":
         kwargs_all["ranker"] = ranker
@@ -351,6 +368,7 @@ def _compute_cfr_metrics(
             "predict_mode": args.predict_mode,
             "iter": iteration,
             "progress": args.progress,
+            "item_embedder": item_embedder,
         }
         if args.predict_mode == "rank":
             kwargs["ranker"] = ranker
@@ -373,6 +391,7 @@ def compute_baseline_metrics(
     title_to_mid: Dict[str, int],
     ranker: HFChatRanker,
     generator: HFOpenGenerator | None,
+    item_embedder: ItemEmbedder,
 ) -> Dict[str, float]:
     metrics = evaluate_zero_shot(baseline_df, k=args.k)
 
@@ -443,6 +462,7 @@ def compute_baseline_metrics(
             iteration=None,
             ranker=ranker,
             generator=generator,
+            item_embedder=item_embedder,
         )
     )
     return metrics
@@ -489,6 +509,7 @@ def compute_facter_metrics(
     title_to_mid: Dict[str, int],
     ranker: HFChatRanker,
     generator: HFOpenGenerator | None,
+    item_embedder: ItemEmbedder,
 ) -> Dict[str, float]:
     metrics: Dict[str, float] = {}
 
@@ -564,6 +585,7 @@ def compute_facter_metrics(
             iteration=args.max_iterations,
             ranker=ranker,
             generator=generator,
+            item_embedder=item_embedder,
         )
     )
     return metrics
@@ -643,6 +665,10 @@ def run_for_dataset(
         with stage("build_catalogue_mapper", timings):
             catalogue_mapper = build_catalogue(embedder, item_db)
             log_metrics({"catalog.items_n": float(len(catalogue_mapper.catalog_titles))})
+
+        with stage("build_item_embedder", timings):
+            item_embedder = ItemEmbedder(embedder, item_db)
+            log_metrics({"item_embedder.items_n": float(len(item_embedder._item_embeddings))})
 
         prompt_cfg = PromptConfig(k_recs=args.k)
         baseline_metrics_all = {}
@@ -763,6 +789,7 @@ def run_for_dataset(
                         title_to_mid=title_to_mid,
                         cal_q_alpha0=cal_res.q_alpha0,
                         system_prompt=system_prompt,
+                        item_embedder=item_embedder,
                     )
                     log_dataframe(baseline_df, f"data/baseline_df_{pset}{prompt_suffix}.json", format="json")
 
@@ -778,6 +805,7 @@ def run_for_dataset(
                         title_to_mid=title_to_mid,
                         ranker=ranker,
                         generator=generator,
+                        item_embedder=item_embedder,
                     )
                     log_metrics({P(f"{baseline_key}.{k}"): v for k, v in baseline_metrics.items()})
                     log_text(json.dumps(baseline_metrics, indent=2), f"results/baseline_metrics_{pset}{prompt_suffix}.json")
@@ -823,12 +851,17 @@ def run_for_dataset(
                     title_to_mid=title_to_mid,
                     ranker=ranker,
                     generator=generator,
+                    item_embedder=item_embedder,
                 )
                 log_metrics({P(k): v for k, v in facter_metrics.items()})
                 log_text(json.dumps(facter_metrics, indent=2), f"results/facter_metrics_{pset}.json")
 
             with stage(f"save_outputs[{pset}]", timings):
                 save_outputs(processed_dir, args, pset, out_df)
+
+        # Flush any remaining embeddings to disk
+        with stage("flush_embedder_cache", timings):
+            embedder.flush()
 
         log_metrics({"stage.TOTAL.seconds": float(time.perf_counter() - total_t0)})
         log_text(json.dumps(timings, indent=2), "results/timings.json")
@@ -843,13 +876,22 @@ def main() -> None:
     device = resolve_device(args.device)
     datasets = parse_datasets(args.datasets)
     base_attrs, protected_sets = parse_protected_sets(args)
-    total_t0 = time.perf_counter()
+    seeds = parse_seeds(args.seeds)
 
-    for dataset_name in datasets:
-        print(f"\n\n{'='*80}")
-        print(f"Processing dataset: {dataset_name.upper()}")
-        print(f"{'='*80}\n")
-        run_for_dataset(dataset_name, args, device, base_attrs, protected_sets, total_t0)
+    for seed in seeds:
+        seed_args = argparse.Namespace(**vars(args))
+        seed_args.seed = seed
+        total_t0 = time.perf_counter()
+
+        print(f"\n\n{'#'*80}")
+        print(f"Running seed: {seed}")
+        print(f"{'#'*80}")
+
+        for dataset_name in datasets:
+            print(f"\n\n{'='*80}")
+            print(f"Processing dataset: {dataset_name.upper()}")
+            print(f"{'='*80}\n")
+            run_for_dataset(dataset_name, seed_args, device, base_attrs, protected_sets, total_t0)
 
 
 if __name__ == "__main__":

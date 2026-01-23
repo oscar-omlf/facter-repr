@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterator, Optional
 
 import mlflow
+import time
 
 
 @dataclass(frozen=True)
