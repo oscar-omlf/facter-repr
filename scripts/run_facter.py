@@ -117,7 +117,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cfr_flip_attr", type=str, default="gender", choices=list(ALLOWED_PROTECTED))
     p.add_argument("--k", type=int, default=10)
     p.add_argument("--predict_mode", type=str, default="rank", choices=["rank", "open"])
-    p.add_argument("--batch_size", type=int, default=8, help="Batch size used when batching LLM calls")
+    p.add_argument("--llm_batch_size", type=int, default=32, help="Batch size used when batching LLM calls")
+    p.add_argument("--embedder_batch_size", type=int, default=256, help="Batch size used when batching LLM calls")
     p.add_argument(
         "--protected_attrs",
         type=str,
@@ -246,14 +247,15 @@ def init_models(args: argparse.Namespace, device: str, dataset_name: str) -> Tup
             device=device,
             progress=args.progress,
             cache_dir=Path(f"data/cache/embeddings/{dataset_name}"),
+            batch_size=args.embedder_batch_size,
         )
     )
 
-    ranker = HFChatRanker(HFChatRankerConfig(model_id=args.model_id, batch_size=args.batch_size))
+    ranker = HFChatRanker(HFChatRankerConfig(model_id=args.model_id, batch_size=args.llm_batch_size))
     generator = None
     if args.predict_mode == "open":
         generator = HFOpenGenerator(
-            HFGenConfig(model_id=args.model_id, batch_size=args.batch_size),
+            HFGenConfig(model_id=args.model_id, batch_size=args.llm_batch_size),
             tokenizer=ranker.tokenizer,
             model=ranker.model,
         )

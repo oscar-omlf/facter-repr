@@ -82,7 +82,6 @@ python scripts/run_facter.py \
    --predict_mode open \
    --datasets ml-1m,amazon \
    --baseline_prompts both \
-   --batch_size 32
 ```
 
 This will:
