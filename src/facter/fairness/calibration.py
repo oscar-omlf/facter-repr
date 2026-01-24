@@ -88,6 +88,7 @@ class OfflineCalibrator:
         so online scoring uses the same output embedding space.
         """
         df = cal_df.reset_index(drop=True).copy()
+        df["group_attrs"] = df[list(self.cfg.protected_cols)].astype(str).agg("_".join, axis=1)
 
         # 1) Enc(x)
         context_emb = self.context_encoder.encode_df(df)  # [N,D] normalized

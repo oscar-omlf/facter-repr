@@ -6,6 +6,7 @@ import pandas as pd
 
 
 from facter.models.embedder import TextEmbedder
+from facter.models.item_embedder import ItemEmbedder
 from facter.fairness.context_encoder import ContextEncoder
 from facter.fairness.scoring import item_text
 
@@ -27,10 +28,12 @@ class CalibrationArtifacts:
 
 
 class OnlineScorer:
-    def __init__(self, embedder: TextEmbedder, context_encoder: ContextEncoder, cfg: OnlineScoringConfig):
+    def __init__(self, embedder: TextEmbedder, item_embedder: ItemEmbedder, context_encoder: ContextEncoder, cfg: OnlineScoringConfig):
         self.embedder = embedder
+        self.item_embedder = item_embedder
         self.context_encoder = context_encoder
         self.cfg = cfg
+
 
     def score_one(
         self,
@@ -52,14 +55,7 @@ class OnlineScorer:
         sims = cal.cal_context_emb @ x_new
 
         # Cross-group mask
-        a_new = tuple(str(row[c]) for c in self.cfg.protected_cols)
-        a_cal = (
-            cal.cal_df[list(self.cfg.protected_cols)]
-            .astype(str)
-            .agg("_".join, axis=1)
-            .to_numpy()
-        )
-        cross = a_cal != "_".join(a_new)
+        cross = cal.cal_df["group_attrs"] != df_one["group_attrs"].iloc[0]
 
         # Optional locality gate (embedding L2 radius τx)
         if self.cfg.tau_x_l2 is not None:
@@ -71,14 +67,12 @@ class OnlineScorer:
         neigh_idx = np.where(neigh_mask)[0]
 
         # Prediction embedding: from pred_text if provided, else from item_db mid
-        if pred_text is not None:
-            pred_txt = str(pred_text)
+        if pred_mid is not None and self.item_embedder is not None:
+            pred_emb = self.item_embedder.get_embedding(pred_mid)
         else:
-            if pred_mid is None:
-                raise ValueError("Either pred_text or pred_mid must be provided.")
-            pred_txt = item_text(int(pred_mid), item_db)
-
-        pred_emb = self.embedder.encode_texts([pred_txt])[0]  # [D], normalized
+            if pred_text is None:
+                raise ValueError("Either pred_mid or pred_text must be provided")
+            pred_emb = self.embedder.encode_text(pred_text)
 
         # \Delta_new
         if neigh_idx.size == 0:
@@ -92,8 +86,12 @@ class OnlineScorer:
         if target_mid is None:
             d_new = 0.0
         else:
-            ref_txt = item_text(int(target_mid), item_db)
-            ref_emb = self.embedder.encode_texts([ref_txt])[0]
+            if self.item_embedder is not None:
+                ref_emb = self.item_embedder.get_embedding(target_mid)
+            else:
+                ref_text = item_text(target_mid, item_db)
+                ref_emb = self.embedder.encode_text(ref_text)
+
             d_new = float(1.0 - float(np.sum(pred_emb * ref_emb)))
 
         s_new = float(d_new + self.cfg.lambda_fairness * delta_new)

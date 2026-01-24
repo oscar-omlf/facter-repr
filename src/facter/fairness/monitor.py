@@ -88,6 +88,7 @@ class FACTEROnlineMonitor:
         logs: list[OnlineIterationLog] = []
 
         df = test_df.reset_index(drop=True).copy()
+        df["group_attrs"] = df[list(group_cols) if group_cols is not None else [self.cfg.protected_key]].astype(str).agg("_".join, axis=1)
 
         if predict_mode == "open":
             if generator is None or prompt_cfg is None:

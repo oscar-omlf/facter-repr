@@ -715,6 +715,7 @@ def run_for_dataset(
                 calibrator = OfflineCalibrator(ranker=ranker, embedder=embedder, context_encoder=ctx, cfg=off_cfg)
                 scorer = OnlineScorer(
                     embedder,
+                    item_embedder,
                     ctx,
                     OnlineScoringConfig(
                         protected_cols=protected_cols,
