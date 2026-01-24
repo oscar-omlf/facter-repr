@@ -119,6 +119,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--predict_mode", type=str, default="rank", choices=["rank", "open"])
     p.add_argument("--llm_batch_size", type=int, default=32, help="Batch size used when batching LLM calls")
     p.add_argument("--embedder_batch_size", type=int, default=256, help="Batch size used when batching LLM calls")
+    p.add_argument("--temperature", type=float, default=0.7, help="Temperature for open-ended generation")
     p.add_argument(
         "--protected_attrs",
         type=str,
@@ -251,11 +252,11 @@ def init_models(args: argparse.Namespace, device: str, dataset_name: str) -> Tup
         )
     )
 
-    ranker = HFChatRanker(HFChatRankerConfig(model_id=args.model_id, batch_size=args.llm_batch_size))
+    ranker = HFChatRanker(HFChatRankerConfig(model_id=args.model_id, batch_size=args.llm_batch_size, temperature=args.temperature))
     generator = None
     if args.predict_mode == "open":
         generator = HFOpenGenerator(
-            HFGenConfig(model_id=args.model_id, batch_size=args.llm_batch_size),
+            HFGenConfig(model_id=args.model_id, batch_size=args.llm_batch_size, temperature=args.temperature),
             tokenizer=ranker.tokenizer,
             model=ranker.model,
         )
