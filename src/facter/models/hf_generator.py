@@ -1,17 +1,43 @@
 import hashlib
-import json, re
+import json
+import re
 from dataclasses import dataclass
-from typing import List, Sequence, Optional
-
 from pathlib import Path
-
-from tqdm import tqdm
+from typing import List, Optional, Sequence
 
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from tqdm import tqdm
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+_TRAILING_YEAR_RE = re.compile(r"\s*(?:\(|\[)\s*(19\d{2}|20\d{2})\s*(?:\)|\])\s*$")
+
 
 def _sha256(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+
+def _clean_generated_title(s: object) -> str:
+    """Normalize a single generated title string.
+
+    - Strips wrapping quotes.
+    - Removes common bullet/numbering prefixes.
+    - Removes trailing commas/semicolons.
+    - Strips a trailing standalone year in parentheses/brackets: "(1999)", "[2001]".
+
+    This is intentionally conservative (only a terminal 4-digit year).
+    """
+    if s is None:
+        return ""
+
+    t = str(s).strip()
+    if not t:
+        return ""
+
+    t = t.strip('"').strip("'")
+    t = re.sub(r"^\s*(?:[-*]+|\(?\d+\)?[.)]|\d+\s*[-:])\s+", "", t).strip()
+    t = t.rstrip(",; ")
+    t = _TRAILING_YEAR_RE.sub("", t).strip()
+    return t
 
 
 @dataclass(frozen=True)
@@ -23,23 +49,32 @@ class HFGenConfig:
     repetition_penalty: float = 1.2
     batch_size: int = 8
     cache_dir: Path = Path("data/cache/generator")
-    torch_dtype: str = "auto"       # "auto" | "float16" | "bfloat16"
-    device_map: str = "auto"        # passed to transformers
+    torch_dtype: str = "auto"  # "auto" | "float16" | "bfloat16"
+    device_map: str = "auto"  # passed to transformers
     trust_remote_code: bool = False
+
 
 def parse_json_list(text: str, k: int) -> List[str]:
     if not text:
         return []
 
     # 1. Pre-process (Smart Quotes)
-    sanitized_text = (
-        text.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
-    )
+    sanitized_text = text.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
 
     # 2. Try JSON array extraction
     m = re.search(r"\[[\s\S]*\]", sanitized_text)
     if m:
         json_str = m.group(0)
+        # Some models (commonly Mistral) emit *invalid* JSON like:
+        #   ["Magnolia" (1999), "Platoon" (1986)]
+        # i.e., the year token is outside the quoted string.
+        # We normalize this to valid JSON by removing a trailing year token
+        # that follows a quoted string.
+        json_str = re.sub(
+            r'("\s*)\s*(?:\(|\[)\s*(19\d{2}|20\d{2})\s*(?:\)|\])\s*(?=\s*[,\]])',
+            r"\1",
+            json_str,
+        )
         json_str = re.sub(r",\s*\]", "]", json_str)
         try:
             arr = json.loads(json_str)
@@ -47,7 +82,7 @@ def parse_json_list(text: str, k: int) -> List[str]:
                 out = []
                 seen = set()
                 for x in arr:
-                    val = str(x).strip()
+                    val = _clean_generated_title(x)
                     if val and val not in seen:
                         out.append(val)
                         seen.add(val)
@@ -55,7 +90,7 @@ def parse_json_list(text: str, k: int) -> List[str]:
                         break
                 return out
         except Exception:
-            pass 
+            pass
 
     # 3. Improved Fallback Parse
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
@@ -64,22 +99,29 @@ def parse_json_list(text: str, k: int) -> List[str]:
 
     # ADD "assistant" and "user" to ignore patterns
     ignore_patterns = [
-        r"based on", r"here is", r"here're", r"recommended", 
-        r"note that", r"^assistant$", r"^user$", r"^system$"
+        r"based on",
+        r"here is",
+        r"here're",
+        r"recommended",
+        r"note that",
+        r"^assistant$",
+        r"^user$",
+        r"^system$",
     ]
 
     for ln in lines:
         # 1. Skip Markdown code fences and JSON structural brackets
-        if '```' in ln or ln.strip() in ['[', ']', '],', '],']:
+        if "```" in ln or ln.strip() in ["[", "]", "],", "],"]:
             continue
 
         # 2. Clean bullets, numbers, and leading/trailing brackets/braces
         # This regex now also targets leading [ or { if they are part of the line
         clean_ln = re.sub(r"^\s*[\-\*\d\.\)\:\[\]\{\}]+\s*", "", ln).strip()
-        
+
         # 3. Clean up trailing artifacts from the JSON-like format
         # This removes trailing commas, closing brackets, and quotes
-        clean_ln = clean_ln.rstrip(',').rstrip(']').rstrip('}').strip('"').strip("'")
+        clean_ln = clean_ln.rstrip(",").rstrip("]").rstrip("}").strip('"').strip("'")
+        clean_ln = _clean_generated_title(clean_ln)
 
         # 4. Skip if line is empty, too long, or matches ignore list
         if not clean_ln or len(clean_ln) > 100:
@@ -124,7 +166,7 @@ class HFOpenGenerator:
     #         "user": prompt_rank,
     #     }
     #     return _sha256(json.dumps(blob, ensure_ascii=False, sort_keys=True))
-    
+
     def _cache_key(self, prompts: Sequence[str], system_prompts: Sequence[Optional[str]], k: int) -> str:
         blob = {
             "model_id": self.cfg.model_id,
@@ -153,10 +195,10 @@ class HFOpenGenerator:
     ) -> List[List[str]]:
         if len(prompts) != len(system_prompts):
             raise ValueError("prompts and system_prompts must have the same length")
-        
+
         key = self._cache_key(prompts, system_prompts, k)
         cpath = self._cache_path(key)
-        
+
         if cpath.exists():
             obj = json.loads(cpath.read_text(encoding="utf-8"))
             return list(obj["json_list"])
@@ -167,7 +209,11 @@ class HFOpenGenerator:
         do_sample = self.cfg.temperature > 0.0
 
         if progress:
-            it = tqdm(range(0, len(prompts), self.cfg.batch_size), total=(len(prompts) + self.cfg.batch_size - 1) // self.cfg.batch_size, desc="HFGen: generate")
+            it = tqdm(
+                range(0, len(prompts), self.cfg.batch_size),
+                total=(len(prompts) + self.cfg.batch_size - 1) // self.cfg.batch_size,
+                desc="HFGen: generate",
+            )
         else:
             it = range(0, len(prompts), self.cfg.batch_size)
 
@@ -183,16 +229,12 @@ class HFOpenGenerator:
                     {"role": "user", "content": p},
                 ]
                 if hasattr(self.tokenizer, "apply_chat_template"):
-                    rendered = self.tokenizer.apply_chat_template(
-                        msgs, tokenize=False, add_generation_prompt=True
-                    )
+                    rendered = self.tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
                 else:
                     rendered = f"SYSTEM:\n{sys}\n\nUSER:\n{p}\n\nASSISTANT:\n"
                 rendered_batch.append(rendered)
 
-            toks = self.tokenizer(
-                rendered_batch, return_tensors="pt", padding=True, truncation=True
-            ).to(device)
+            toks = self.tokenizer(rendered_batch, return_tensors="pt", padding=True, truncation=True).to(device)
 
             gen = self.model.generate(
                 **toks,
@@ -215,7 +257,9 @@ class HFOpenGenerator:
                 generated_content_list.append(txt)
 
         cpath.write_text(
-            json.dumps({"json_list": out_all, 'generated_content': generated_content_list}, ensure_ascii=False, indent=2),
+            json.dumps(
+                {"json_list": out_all, "generated_content": generated_content_list}, ensure_ascii=False, indent=2
+            ),
             encoding="utf-8",
         )
 

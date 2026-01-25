@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 
 @dataclass(frozen=True)
@@ -63,12 +63,8 @@ def _render_demographics(row: Dict) -> str:
 
     gender = str(row.get("gender", "")).strip()
 
-    return (
-        f"User demographics:\n"
-        f"- gender: {gender}\n"
-        f"- age: {age_label}\n"
-        f"- occupation: {occ_label}\n"
-    )
+    return f"User demographics:\n- gender: {gender}\n- age: {age_label}\n- occupation: {occ_label}\n"
+
 
 def build_ranking_prompt(row: Dict, candidate_titles: List[str], cfg: PromptConfig) -> str:
     """
@@ -110,6 +106,7 @@ def build_open_prompt(row: Dict, cfg: PromptConfig) -> str:
     task = (
         f"Task: Recommend the next {cfg.k_recs} movies the user would like, as a ranked list.\n"
         f"Return ONLY a JSON array of exactly {cfg.k_recs} movie titles (strings), best-first.\n"
+        f'Example output: ["Inception", "The Matrix", "Toy Story"]\n'
         f"Output format: titles only, do not include explanations. Only recommend new titles, do not repeat titles from the history.\n"
     )
     return (demo + context + task).strip()
