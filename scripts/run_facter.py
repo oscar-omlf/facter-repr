@@ -310,6 +310,7 @@ def run_baseline(
         system_prompt=system_prompt,
         threshold=cal_q_alpha0,
         protected_cols=protected_cols,
+        buffer_size=args.buffer_size,
     )
 
     return baseline_df
@@ -630,6 +631,34 @@ def save_outputs(processed_dir: Path, args: argparse.Namespace, pset: str, out_d
     log_text(str(out_path), f"results/output_path_{pset}.txt")
 
 
+def compute_qstar_counterfactuals(out_df: pd.DataFrame, q_star: float, max_iterations: int) -> Dict[str, float]:
+    """
+    Diagnostics using already-computed S_iter{t}.
+    Does NOT re-run the model or prompt repair; only re-evaluates the violation predicate.
+    """
+    metrics: Dict[str, float] = {}
+
+    iters_with_any = 0
+    first_zero = None
+
+    for t in range(1, max_iterations + 1):
+        col = f"S_iter{t}"
+        if col not in out_df.columns:
+            continue
+        S = out_df[col].to_numpy(dtype=float)
+        v = int(np.sum(S > float(q_star)))
+        metrics[f"iter{t}.violations.fixedQstar"] = float(v)
+
+        if v > 0:
+            iters_with_any += 1
+        if v == 0 and first_zero is None:
+            first_zero = t
+
+    metrics["qstar.iters_with_any_violation"] = float(iters_with_any)
+    metrics["qstar.iters_to_first_zero_violation"] = float(first_zero if first_zero is not None else max_iterations)
+    return metrics
+
+
 def run_for_dataset(
     dataset_name: str,
     args: argparse.Namespace,
@@ -867,13 +896,35 @@ def run_for_dataset(
                     title_to_mid=title_to_mid,
                     catalogue_mapper=catalogue_mapper,
                 )
+
+                # Log per-iteration Q start/end and violations, plus Q-trace artifacts
                 for it_log in logs:
                     log_metrics({
-                        P(f"iter{it_log.iteration}.q_alpha_end"): float(it_log.q_alpha),
-                        P(f"iter{it_log.iteration}.violations"): float(it_log.violations),
+                        P(f"iter{it_log.iteration}.q_alpha_start"): float(it_log.q_alpha_start),
+                        P(f"iter{it_log.iteration}.q_alpha_end"): float(it_log.q_alpha_end),
+                        P(f"iter{it_log.iteration}.q_updates.count"): float(max(0, len(it_log.q_trace) - 1)),
+                        P(f"iter{it_log.iteration}.violations.dynamicQ"): float(it_log.violations),
+                        P(f"iter{it_log.iteration}.violations.fixedQ0"): float(it_log.violations_at_Q0),
                         P(f"iter{it_log.iteration}.S_mean"): float(it_log.mean_S),
                     }, step=it_log.iteration)
+
+                    # Q trajectory
+                    log_text(
+                        json.dumps(
+                            {"q_trace": it_log.q_trace, "q_update_steps": it_log.q_update_steps},
+                            indent=2
+                        ),
+                        f"results/q_trace_{pset}_iter{it_log.iteration}.json"
+                    )
+
                 log_dataframe(out_df, f"data/online_monitor_df_{pset}.json", format="json")
+            
+            if logs:
+                q_star = float(logs[-1].q_alpha_end)
+                qstar_metrics = compute_qstar_counterfactuals(out_df, q_star=q_star, max_iterations=args.max_iterations)
+
+                log_metrics({P(k): v for k, v in qstar_metrics.items()})
+                log_text(json.dumps(qstar_metrics, indent=2), f"results/qstar_counterfactuals_{pset}.json")
 
             with stage(f"compute_facter_metrics[{pset}]", timings):
                 facter_metrics = compute_facter_metrics(
