@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple, Any, List
+from collections import deque
+import math
 
 import numpy as np
 import pandas as pd
@@ -26,10 +28,12 @@ class OnlineIterationLog:
     iteration: int
     q_alpha_start: float
     q_alpha_end: float
-    q_trace: List[float]          # Q values: [start] + one entry per update
-    q_update_steps: List[int]     # indices i where Q changed (row index in df)
-    violations: int               # violations under dynamic Q (what you already counted)
-    violations_at_Q0: int         # counterfactual: violations if threshold fixed at Q0 for this iteration
+    q_trace: List[float]
+    q_update_steps: List[int]
+    violations: int                    # raw: S > Q_t (dynamic)
+    violations_at_Q0: int              # raw: S > Q0 (fixed)
+    violations_corr_dynamic: int       # corrected: S > Q_t + C/sqrt(n)
+    violations_corr_at_Q0: int         # corrected: S > Q0 + C/sqrt(n)
     mean_S: float
     mean_d: float
     mean_delta: float
@@ -64,16 +68,24 @@ class FACTEROnlineMonitor:
         min_sim: float = 0.65,
     ) -> Tuple[pd.DataFrame, list[OnlineIterationLog]]:
 
-        q = float(q_alpha0)       # dynamic Q (carries across iterations)
-        q0 = float(q_alpha0)      # fixed baseline Q0 for counterfactual counting
+        q = float(q_alpha0)   # dynamic Q carried across iterations
+        q0 = float(q_alpha0)  # fixed baseline Q0 for counterfactual counting
         logs: list[OnlineIterationLog] = []
 
         df = test_df.reset_index(drop=True).copy()
-        df["group_attrs"] = df[list(group_cols) if group_cols is not None else [self.cfg.protected_key]].astype(str).agg("_".join, axis=1)
+        cols = tuple(group_cols) if group_cols is not None else (self.cfg.protected_key,)
+        df["group_attrs"] = df[list(cols)].astype(str).agg("_".join, axis=1)
 
-        if predict_mode == "open":
-            if generator is None or prompt_cfg is None:
-                raise ValueError("open mode requires generator and prompt_cfg")
+        if predict_mode == "open" and (generator is None or prompt_cfg is None):
+            raise ValueError("open mode requires generator and prompt_cfg")
+
+        # For corrected-violation metrics: FIFO buffers of *prior corrected violations* (baseline-style)
+        buf_len = max(int(getattr(self.repair.cfg, "buffer_size", 50)), 0)
+        Vcorr_dyn = deque(maxlen=buf_len)
+        Vcorr_q0 = deque(maxlen=buf_len)
+
+        n = int(len(df))
+        denom = math.sqrt(n) if n > 0 else 1.0
 
         for t in range(1, self.cfg.max_iterations + 1):
             q_start = float(q)
@@ -88,12 +100,22 @@ class FACTEROnlineMonitor:
             d_list: list[float] = []
             delta_list: list[float] = []
 
-            # logging Q per datapoint to “see the trajectory”
             q_before_list: list[float] = []
             q_after_list: list[float] = []
 
+            # corrected diagnostics per-row (optional but useful)
+            C_corr_dyn_list: list[int] = []
+            thr_corr_dyn_list: list[float] = []
+            viol_corr_dyn_list: list[bool] = []
+
+            C_corr_q0_list: list[int] = []
+            thr_corr_q0_list: list[float] = []
+            viol_corr_q0_list: list[bool] = []
+
             viol_dynamic = 0
             viol_at_q0 = 0
+            viol_corr_dynamic = 0
+            viol_corr_at_q0 = 0
 
             preds: list[int] = []
             ranked_mids_list: list[list[int]] = []
@@ -106,10 +128,9 @@ class FACTEROnlineMonitor:
 
             for i in idx_iter:
                 row = df.iloc[i]
-                cols = group_cols if group_cols is not None else (self.cfg.protected_key,)
                 attrs = {c: str(row[c]) for c in cols}
+                key = tuple(attrs[c] for c in cols)
 
-                # record q before scoring this point
                 q_before = float(q)
 
                 system_prompt = self.repair.build_system_prompt(
@@ -130,7 +151,6 @@ class FACTEROnlineMonitor:
                     generated_titles_list.append([])
                     generated_mids_list.append([])
                     valid_at_k_list.append(0.0)
-
                 else:
                     pred_result = predict_single_open(
                         row, generator, item_db, prompt_cfg, system_prompt,
@@ -154,18 +174,18 @@ class FACTEROnlineMonitor:
                     target_mid=int(row["target_mid"]),
                 )
 
-                S_list.append(float(s))
+                s = float(s)
+                S_list.append(s)
                 d_list.append(float(d))
                 delta_list.append(float(delta))
 
-                # counterfactual: violations if Q was fixed at Q0
-                if float(s) > q0:
+                # Raw counters
+                if s > q0:
                     viol_at_q0 += 1
 
-                is_violation = float(s) > q_before
-                is_viol_list.append(bool(is_violation))
-
-                if is_violation:
+                is_violation_raw = s > q_before
+                is_viol_list.append(bool(is_violation_raw))
+                if is_violation_raw:
                     viol_dynamic += 1
 
                     if pred_mid != -1:
@@ -173,15 +193,37 @@ class FACTEROnlineMonitor:
                     else:
                         self.repair.add_violation(attrs=attrs, pred_title=pred_text)
 
-                    # update Q and log it “whenever it changes”
-                    q = update_threshold_theorem2(q_t=q_before, s_t=float(s), gamma=self.cfg.gamma)
+                    q = update_threshold_theorem2(q_t=q_before, s_t=s, gamma=self.cfg.gamma)
                     q_trace.append(float(q))
                     q_update_steps.append(int(i))
 
-                # record q after this point
+                # Corrected counters (baseline-style FIFO over prior corrected violations)
+                C_dyn = sum(1 for kk in Vcorr_dyn if kk == key)
+                thr_dyn = q_before + (float(C_dyn) / float(denom))
+                is_viol_corr_dyn = s > thr_dyn
+                if is_viol_corr_dyn:
+                    viol_corr_dynamic += 1
+                    Vcorr_dyn.append(key)
+
+                C0 = sum(1 for kk in Vcorr_q0 if kk == key)
+                thr0 = q0 + (float(C0) / float(denom))
+                is_viol_corr_q0 = s > thr0
+                if is_viol_corr_q0:
+                    viol_corr_at_q0 += 1
+                    Vcorr_q0.append(key)
+
+                # store per-row diagnostics
                 q_after = float(q)
                 q_before_list.append(q_before)
                 q_after_list.append(q_after)
+
+                C_corr_dyn_list.append(int(C_dyn))
+                thr_corr_dyn_list.append(float(thr_dyn))
+                viol_corr_dyn_list.append(bool(is_viol_corr_dyn))
+
+                C_corr_q0_list.append(int(C0))
+                thr_corr_q0_list.append(float(thr0))
+                viol_corr_q0_list.append(bool(is_viol_corr_q0))
 
             # persist outputs
             df[f"pred_mid_iter{t}"] = preds
@@ -197,9 +239,17 @@ class FACTEROnlineMonitor:
             df[f"delta_iter{t}"] = delta_list
             df[f"is_violation_iter{t}"] = is_viol_list
 
-            # Q trajectory columns
             df[f"q_before_iter{t}"] = q_before_list
             df[f"q_after_iter{t}"] = q_after_list
+
+            # corrected diagnostics columns
+            df[f"C_corr_dyn_iter{t}"] = C_corr_dyn_list
+            df[f"thr_corr_dyn_iter{t}"] = thr_corr_dyn_list
+            df[f"is_violation_corr_dyn_iter{t}"] = viol_corr_dyn_list
+
+            df[f"C_corr_q0_iter{t}"] = C_corr_q0_list
+            df[f"thr_corr_q0_iter{t}"] = thr_corr_q0_list
+            df[f"is_violation_corr_q0_iter{t}"] = viol_corr_q0_list
 
             q_end = float(q)
 
@@ -212,6 +262,8 @@ class FACTEROnlineMonitor:
                     q_update_steps=q_update_steps,
                     violations=int(viol_dynamic),
                     violations_at_Q0=int(viol_at_q0),
+                    violations_corr_dynamic=int(viol_corr_dynamic),
+                    violations_corr_at_Q0=int(viol_corr_at_q0),
                     mean_S=float(np.mean(S_list)) if S_list else 0.0,
                     mean_d=float(np.mean(d_list)) if d_list else 0.0,
                     mean_delta=float(np.mean(delta_list)) if delta_list else 0.0,

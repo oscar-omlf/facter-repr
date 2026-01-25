@@ -932,6 +932,8 @@ def run_for_dataset(
                         P(f"iter{it_log.iteration}.violations.dynamicQ"): float(it_log.violations),
                         P(f"iter{it_log.iteration}.violations.fixedQ0"): float(it_log.violations_at_Q0),
                         P(f"iter{it_log.iteration}.S_mean"): float(it_log.mean_S),
+                        P(f"iter{it_log.iteration}.violations.dynamicQ.corrected"): float(it_log.violations_corr_dynamic),
+                        P(f"iter{it_log.iteration}.violations.fixedQ0.corrected"): float(it_log.violations_corr_at_Q0),
                     }, step=it_log.iteration)
 
                     # Q trajectory
