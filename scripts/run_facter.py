@@ -432,13 +432,13 @@ def compute_baseline_metrics(
     if args.predict_mode == "open" and "valid_at_k" in baseline_df.columns:
         metrics["ValidAtK.mean"] = float(np.mean(baseline_df["valid_at_k"]))
 
-    group_keys = baseline_df[list(protected_cols)].astype(str).apply(
+    group_keys_joint = baseline_df[list(protected_cols)].astype(str).apply(
         lambda r: "|".join([f"{c}={r[c]}" for c in protected_cols]), axis=1,
     ).tolist()
 
     sns = snsr_snsv_proxy_from_mid_lists(
         rec_mid_lists=ranked_lists,
-        group_keys=group_keys,
+        group_keys=group_keys_joint,
         embedder=embedder,
         item_db=item_db,
         k=args.k,
@@ -446,6 +446,20 @@ def compute_baseline_metrics(
     )
     metrics["SNSR"] = float(sns.SNSR)
     metrics["SNSV"] = float(sns.SNSV)
+
+    # Per-attribute SNS metrics in addition to the joint key.
+    for attr in protected_cols:
+        attr_keys = baseline_df[attr].astype(str).tolist()
+        sns_attr = snsr_snsv_proxy_from_mid_lists(
+            rec_mid_lists=ranked_lists,
+            group_keys=attr_keys,
+            embedder=embedder,
+            item_db=item_db,
+            k=args.k,
+            min_group_size=30,
+        )
+        metrics[f"SNSR.{attr}"] = float(sns_attr.SNSR)
+        metrics[f"SNSV.{attr}"] = float(sns_attr.SNSV)
 
     if "is_violation" in baseline_df.columns:
         metrics["n_violations"] = int(np.sum(baseline_df["is_violation"].to_numpy(dtype=bool)))
@@ -528,9 +542,10 @@ def compute_facter_metrics(
     else:
         metrics["RelevantSetSize.mean"] = 1.0
 
-    group_keys = out_df[list(protected_cols)].astype(str).apply(
+    group_keys_joint = out_df[list(protected_cols)].astype(str).apply(
         lambda r: "|".join([f"{c}={r[c]}" for c in protected_cols]), axis=1,
     ).tolist()
+    group_keys_per_attr = {attr: out_df[attr].astype(str).tolist() for attr in protected_cols}
 
     for iteration in range(1, args.max_iterations + 1):
         ranked_lists = (
@@ -562,7 +577,7 @@ def compute_facter_metrics(
 
         sns = snsr_snsv_proxy_from_mid_lists(
             rec_mid_lists=ranked_lists,
-            group_keys=group_keys,
+            group_keys=group_keys_joint,
             embedder=embedder,
             item_db=item_db,
             k=args.k,
@@ -570,6 +585,18 @@ def compute_facter_metrics(
         )
         metrics[f"iter{iteration}.SNSR"] = float(sns.SNSR)
         metrics[f"iter{iteration}.SNSV"] = float(sns.SNSV)
+
+        for attr, keys in group_keys_per_attr.items():
+            sns_attr = snsr_snsv_proxy_from_mid_lists(
+                rec_mid_lists=ranked_lists,
+                group_keys=keys,
+                embedder=embedder,
+                item_db=item_db,
+                k=args.k,
+                min_group_size=30,
+            )
+            metrics[f"iter{iteration}.SNSR.{attr}"] = float(sns_attr.SNSR)
+            metrics[f"iter{iteration}.SNSV.{attr}"] = float(sns_attr.SNSV)
 
         if args.predict_mode == "open":
             col_name = f"valid_at_k_iter{iteration}"
