@@ -30,6 +30,7 @@ from facter.models.embedder import EmbedderConfig, TextEmbedder
 from facter.models.hf_generator import HFGenConfig, HFOpenGenerator
 from facter.models.hf_ranker import HFChatRanker, HFChatRankerConfig
 from facter.models.item_embedder import ItemEmbedder
+from facter.models.model_registry import BASE_MODELS
 from facter.prompting.repair import PromptRepairConfig, PromptRepairEngine
 from facter.tracking.mlflow import (
     MLflowConfig,
@@ -102,7 +103,25 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated list of datasets to run: ml-1m and/or amazon. Default: ml-1m",
     )
     p.add_argument("--processed_dir_template", type=str, default="data/processed/{dataset}")
-    p.add_argument("--model_id", type=str, required=True)
+    p.add_argument(
+        "--base_model",
+        type=str,
+        default="llama3",
+        choices=sorted(BASE_MODELS.keys()),
+        help=(
+            "Short name for a local Hugging Face baseline model. "
+            "Used to resolve --model_id via src/facter/models/model_registry.py (BASE_MODELS)."
+        ),
+    )
+    p.add_argument(
+        "--model_id",
+        type=str,
+        default=None,
+        help=(
+            "Hugging Face model id or local path. If omitted, resolved from --base_model. "
+            "If provided, it overrides --base_model."
+        ),
+    )
     p.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
     p.add_argument("--progress", action="store_true")
     p.add_argument("--alpha", type=float, default=0.10)
@@ -161,7 +180,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip the FACTER online monitoring phase (only run baselines).",
     )
-    return p.parse_args()
+
+    args = p.parse_args()
+
+    # Resolve model id from registry unless explicitly overridden.
+    if args.model_id is None:
+        args.model_id = str(BASE_MODELS[args.base_model]["model_id"])
+
+    return args
 
 
 def resolve_device(arg_device: str) -> str:

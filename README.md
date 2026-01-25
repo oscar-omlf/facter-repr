@@ -71,10 +71,21 @@ Outputs:
 
 ## Running experiments (MovieLens-1M)
 ### End-to-end FACTER (offline + online)
-You must provide a Hugging Face `model_id` for the LLM ranker. Example:
+This repo runs **local Hugging Face models** for the LLM ranker/generator.
+
+#### Model selection
+You can choose a model in two ways:
+
+1) **Recommended:** pick a short name via `--base_model`.
+  This resolves to a Hugging Face `model_id` via the registry in `src/facter/models/model_registry.py` (`BASE_MODELS`).
+
+2) **Override:** pass a Hugging Face `--model_id` directly.
+  If provided, it overrides `--base_model`.
+
+Example (use a base model preset):
 ```bash
 python scripts/run_facter.py \
-   --model_id meta-llama/Meta-Llama-3-8B-Instruct \
+  --base_model llama3 \
    --seeds 0 \
    --protected_attrs gender,age,occupation \
    --max_iterations 5 \
@@ -82,6 +93,20 @@ python scripts/run_facter.py \
    --predict_mode open \
    --datasets ml-1m,amazon \
    --baseline_prompts both \
+```
+
+Example (override with an explicit HF model id):
+```bash
+python scripts/run_facter.py \
+  --base_model mistral \
+  --model_id mistralai/Mistral-7B-Instruct-v0.2 \
+  --seeds 0 \
+  --protected_attrs gender,age,occupation \
+  --max_iterations 5 \
+  --progress \
+  --predict_mode open \
+  --datasets ml-1m \
+  --baseline_prompts both \
 ```
 
 This will:
