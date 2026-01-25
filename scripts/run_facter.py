@@ -675,6 +675,11 @@ def run_for_dataset(
             "repair.keying": args.repair_keying,
             "baseline_prompts": args.baseline_prompts,
             "skip_online": bool(args.skip_online),
+            "cfr_flip_strategy": args.cfr_flip_strategy,
+            "cfr_flip_attrs": args.cfr_flip_attrs or "default",
+            "llm_batch_size": args.llm_batch_size,
+            "embedder_batch_size": args.embedder_batch_size,
+            "temperature": args.temperature,
         })
         log_text(json.dumps({"protected_sets": protected_sets}, indent=2), "config/protected_sets.json")
 
