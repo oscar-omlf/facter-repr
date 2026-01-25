@@ -70,30 +70,6 @@ def _render_demographics(row: Dict) -> str:
         f"- occupation: {occ_label}\n"
     )
 
-
-def build_generation_prompt(row: Dict, cfg: PromptConfig) -> str:
-    """
-    Generation-style prompt: ask the LLM to produce top-k recommendations (titles).
-    This supports Recall@10/NDCG@10 evaluation by comparing the returned list to the target.
-    """
-    parts: List[str] = []
-    if cfg.include_demographics:
-        parts.append(_render_demographics(row).strip())
-
-    parts.append("History (most recent last):")
-    for i, title in enumerate(row["history_titles"], start=1):
-        parts.append(f"{i}. {title}")
-
-    parts.append("")
-    parts.append(
-        f"Task: Recommend the next {cfg.k_recs} {cfg.domain}s for this user."
-    )
-    parts.append(
-        "Output format: titles only, one title per line. Do not include explanations. Only recommend new titles, do not repeat titles from the history."
-    )
-    return "\n".join(parts).strip()
-
-
 def build_ranking_prompt(row: Dict, candidate_titles: List[str], cfg: PromptConfig) -> str:
     """
     Ranking-style prompt: ask the LLM to rank a candidate set (used for controlled evaluation).

@@ -1,4 +1,4 @@
-from facter.data.prompts import PromptConfig, build_generation_prompt, build_ranking_prompt
+from facter.data.prompts import PromptConfig, build_open_prompt, build_ranking_prompt
 
 
 def test_generation_prompt_contains_demographics_and_history():
@@ -9,7 +9,7 @@ def test_generation_prompt_contains_demographics_and_history():
         "history_titles": ["A", "B", "C", "D", "E"],
     }
     cfg = PromptConfig(k_recs=10, include_demographics=True, domain="movie")
-    p = build_generation_prompt(row, cfg)
+    p = build_open_prompt(row, cfg)
     assert "User demographics" in p
     assert "History" in p
     assert "Recommend the next 10 movies" in p
