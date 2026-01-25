@@ -152,8 +152,6 @@ class PromptRepairEngine:
                 seen.add(r)
         return uniq[: self.cfg.max_rules * len(self.cfg.protected_cols)]
 
-        return uniq[: self.cfg.max_rules * len(self.cfg.protected_cols)]
-
     def build_system_prompt(
         self,
         attrs: Optional[Dict[str, str]],

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 import math
-from collections import defaultdict
+from collections import defaultdict, deque
 
 import pandas as pd
 
@@ -37,39 +37,35 @@ def run_zero_shot(
     min_sim: float = 0.65,
     threshold: float = 1,
     protected_cols: Optional[Sequence[str]] = None,
+    buffer_size: int = 50,
 ) -> pd.DataFrame:
     """
     Unified zero-shot prediction: rank or open-generation based on predict_mode.
-    
-    Rank mode:
-    - Requires ranker
-    - Returns ranked_mids from candidate selection
-    
-    Open mode:
-    - Requires generator and item_db
-    - Generates top-k titles and maps to mids via catalogue_mapper or title_to_mid fallback
+
+    IMPORTANT (Algorithm-1-aligned C):
+      - Maintain a bounded FIFO violation buffer V (maxlen=buffer_size).
+      - For each new point, filter V to the same protected group => C = |C|.
+      - Use adj_thr = threshold + C/sqrt(n) (keeping your existing formula).
     """
     if predict_mode == "rank":
         if ranker is None:
             raise ValueError("rank mode requires ranker")
-        
+
         res = predict_batch_rank(df, ranker, item_db or {}, system_prompt=system_prompt, progress=progress)
         df["pred_mid"] = res.pred_mids
         df["ranked_mids"] = res.ranked_mids_list
         df["system_prompt"] = [system_prompt] * len(df)
         df["ranker_response"] = res.model_responses
-        
+
     elif predict_mode == "open":
         if generator is None or item_db is None:
             raise ValueError("open mode requires generator and item_db")
-        
-        # Build title_to_mid if not provided and no catalog mapper
+
         if title_to_mid is None and catalogue_mapper is None:
             title_to_mid = build_title_to_mid_dict(item_db)
-        
-        # Create prompt config with k_recs set to k
+
         prompt_cfg = PromptConfig(k_recs=k)
-        
+
         res = predict_batch_open(
             df,
             generator,
@@ -81,60 +77,76 @@ def run_zero_shot(
             min_sim=min_sim,
             progress=progress,
         )
-        
+
         df["pred_mid"] = res.pred_mids
         df["pred_text"] = res.pred_texts
         df["ranked_mids"] = res.ranked_mids_list
         df["system_prompt"] = [system_prompt] * len(df)
         df["generator_response"] = res.model_responses
         df["valid_at_k"] = res.valid_at_k_list
-        
+
     else:
         raise ValueError("predict_mode must be 'rank' or 'open'")
-    
+
+    if context_encoder is None:
+        raise ValueError("context_encoder is required")
+    if neighbor_index is None:
+        raise ValueError("neighbor_index is required")
+
     context_emb = context_encoder.encode_df(df)
     neighbor_index.fit(df, context_emb)
 
     # Calculate S score for each prediction if scorer and neighbor_index are provided
-    if scorer is not None and neighbor_index is not None and item_db is not None:
-        S, d, delta, pred_emb = scorer.compute(
-            df, 
-            pred_mid_col="pred_mid", 
-            item_db=item_db, 
+    if scorer is not None and item_db is not None:
+        S, d, delta, _pred_emb = scorer.compute(
+            df,
+            pred_mid_col="pred_mid",
+            item_db=item_db,
             neighbor_index=neighbor_index
         )
         df["s_score"] = S
         df["d_score"] = d
         df["delta_score"] = delta
-    
-        # Per-datapoint threshold: threshold + (C / sqrt(n)), where C counts prior violations for the same group
-        n = len(df)
-        group_violation_counts = defaultdict(int)
-        protected_cols = tuple(protected_cols or [])
+
+        # Algorithm-1 style: bounded FIFO buffer V of prior violations.
+        protected_cols_tup = tuple(protected_cols or [])
+        V = deque(maxlen=max(int(buffer_size), 0))  # stores group keys of past violations
+
+        n = int(len(df))
+        denom = math.sqrt(n) if n > 0 else 1.0
 
         adjusted_thresholds: List[float] = []
         is_violation_flags: List[bool] = []
+        C_counts: List[int] = []
+        V_lens: List[int] = []
 
         for _, row in df.iterrows():
-            if protected_cols:
-                key = tuple(str(row[c]) for c in protected_cols)
+            if protected_cols_tup:
+                key = tuple(str(row[c]) for c in protected_cols_tup)
             else:
                 key = ("__all__",)
 
-            C = group_violation_counts[key]
-            adj_thr = threshold + (C / math.sqrt(n) if n > 0 else 0.0)
+            # C = |{ v in V : v.key == key }|
+            C = sum(1 for kk in V if kk == key)
+
+            adj_thr = float(threshold) + (float(C) / float(denom))
             is_violation = float(row["s_score"]) > adj_thr
 
             adjusted_thresholds.append(adj_thr)
-            is_violation_flags.append(is_violation)
+            is_violation_flags.append(bool(is_violation))
+            C_counts.append(int(C))
+            V_lens.append(int(len(V)))
 
             if is_violation:
-                group_violation_counts[key] += 1
+                V.append(key)
 
+        df["C_count"] = C_counts               # debug: C per row
+        df["V_len"] = V_lens                   # debug: buffer length per row
         df["adjusted_threshold"] = adjusted_thresholds
         df["is_violation"] = is_violation_flags
-    
+
     return df
+
 
 
 def run_zero_shot_ranking(
