@@ -2,7 +2,7 @@ import argparse
 import json
 
 from facter.data.download import download_dataset
-from facter.data.frames import AmazonFrames, MovieLensFrames
+from facter.data.frames import AmazonFrames, MovieLensFrames, Sushi3Frames
 from facter.data.paths import PROCESSED_DIR
 from facter.data.prompts import (
     PromptConfig,
@@ -19,7 +19,7 @@ from facter.data.protocol import (
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--dataset", type=str, default="ml-1m", choices=["ml-1m", "amazon"])
+    p.add_argument("--dataset", type=str, default="ml-1m", choices=["ml-1m", "amazon", "sushi3-2016"])
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--n", type=int, default=2500)
     p.add_argument("--n_candidates", type=int, default=100)
@@ -57,13 +57,22 @@ def main() -> None:
         frames = AmazonFrames(raw_dir=raw_dir)
         df1, df2 = frames.ratings, frames.metadata
         domain = "product"
+    elif args.dataset == "sushi3-2016":
+        frames = Sushi3Frames(raw_dir=raw_dir, variant="b")
+        # Sushi is an explicit ranking dataset; we treat per-user top-k order as a pseudo-sequence.
+        # We pass a single df through build_interactions via a new dataset handler.
+        df1, df2 = frames.orders, frames.users
+        domain = "sushi"
     else:
         raise ValueError(f"Unknown dataset: {args.dataset}")
 
     item_db = frames.build_item_db()
 
     # IMPORTANT: item_pool should be a concrete sequence/array (not dict_keys)
-    item_pool = list(item_db.keys())
+    # build_candidate_sets expects a numpy array.
+    import numpy as np
+
+    item_pool = np.asarray(list(item_db.keys()), dtype=np.int64)
 
     cfg = ProtocolConfig(
         sample_interactions=args.n,
@@ -88,9 +97,7 @@ def main() -> None:
         return [item_db[int(m)]["title"] for m in mids]
 
     for split_name, df in [("cal", cal), ("test", test)]:
-        df["prompt_gen"] = df.apply(
-            lambda r: build_open_prompt(r.to_dict(), pcfg), axis=1
-        )
+        df["prompt_gen"] = df.apply(lambda r: build_open_prompt(r.to_dict(), pcfg), axis=1)
         df["candidate_titles"] = df["candidate_mids"].apply(titles_from_mids)
         df["prompt_rank"] = df.apply(
             lambda r: build_ranking_prompt(r.to_dict(), r["candidate_titles"], pcfg),
@@ -111,7 +118,7 @@ def main() -> None:
         "n_test": len(test),
         "protocol": cfg.__dict__,
     }
-    meta_path = (PROCESSED_DIR / args.dataset / "meta.json")
+    meta_path = PROCESSED_DIR / args.dataset / "meta.json"
     meta_path.parent.mkdir(parents=True, exist_ok=True)
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 

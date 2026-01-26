@@ -3,8 +3,8 @@ import itertools
 import json
 import os
 import time
-from datetime import datetime
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
@@ -14,12 +14,12 @@ import torch
 from codecarbon import EmissionsTracker
 
 from facter.data.download import download_dataset
-from facter.data.frames import AmazonFrames, MovieLensFrames
+from facter.data.frames import AmazonFrames, MovieLensFrames, Sushi3Frames
 from facter.data.prompts import PromptConfig
 from facter.eval.baselines import evaluate_zero_shot, run_zero_shot
 from facter.eval.catalogue_map import CatalogueMapper
 from facter.eval.counterfactual import CFRConfig, compute_cfr
-from facter.eval.metrics import mean_recall_ndcg, mean_recall_ndcg_multi, snsr_snsv_proxy_from_mid_lists
+from facter.eval.metrics import mean_recall_ndcg_multi, snsr_snsv_proxy_from_mid_lists
 from facter.fairness.calibration import OfflineCalibConfig, OfflineCalibrator
 from facter.fairness.context_encoder import ContextEncoder, ContextEncodingConfig
 from facter.fairness.monitor import FACTEROnlineMonitor, OnlineMonitorConfig
@@ -42,21 +42,21 @@ from facter.tracking.mlflow import (
 )
 from facter.utils.seeding import SeedConfig, seed_all
 
-
 ALLOWED_PROTECTED = ("gender", "age", "occupation")
 
 NEUTRAL_PROMPT_TEMPLATE = (
-    "You are a helpful recommendation assistant.\n"
-    "Recommend items based on the user's watch history.\n"
+    "You are a helpful recommendation assistant.\nRecommend items based on the user's watch history.\n"
 )
 
 
-FAIR_PROMPT_TEMPLATE = "\n".join([
-    "You are a fair recommendation system.",
-    "Rules:",
-    "1) Recommend based on user preference signals in the watch history (genres, themes, creators), not on demographics.",
-    "2) Do NOT reinforce stereotypes or demographic-based assumptions.",
-])
+FAIR_PROMPT_TEMPLATE = "\n".join(
+    [
+        "You are a fair recommendation system.",
+        "Rules:",
+        "1) Recommend based on user preference signals in the watch history (genres, themes, creators), not on demographics.",
+        "2) Do NOT reinforce stereotypes or demographic-based assumptions.",
+    ]
+)
 
 
 def _read_split(processed_dir: Path, split: str) -> pd.DataFrame:
@@ -180,6 +180,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip the FACTER online monitoring phase (only run baselines).",
     )
+    p.add_argument(
+        "--embedder_model_id",
+        type=str,
+        default="JJTsao/fine-tuned_movie_retriever-all-mpnet-base-v2",
+        help="SentenceTransformer model id for the embedder used in mapping/scoring (default: repo's fine-tuned movie retriever).",
+    )
 
     args = p.parse_args()
 
@@ -201,8 +207,8 @@ def parse_datasets(raw: str) -> List[str]:
     if not datasets:
         return ["ml-1m"]
     for ds in datasets:
-        if ds not in ["ml-1m", "amazon"]:
-            raise ValueError(f"Unknown dataset: {ds}. Allowed: ml-1m, amazon")
+        if ds not in ["ml-1m", "amazon", "sushi3-2016"]:
+            raise ValueError(f"Unknown dataset: {ds}. Allowed: ml-1m, amazon, sushi3-2016")
     return datasets
 
 
@@ -248,13 +254,21 @@ def build_processed_dir(template: str, dataset_name: str) -> Path:
 
 
 def load_item_db(dataset_name: str) -> Tuple[Dict[int, Dict[str, str]], str, Dict[str, int]]:
-    raw_dir = download_dataset(dataset=dataset_name, force=False)
+    # Sushi3 is provided locally under data/raw/sushi3-2016 and isn't part of the
+    # downloader yet.
+    if dataset_name == "sushi3-2016":
+        raw_dir = Path("data/raw/sushi3-2016")
+    else:
+        raw_dir = download_dataset(dataset=dataset_name, force=False)
     if dataset_name == "ml-1m":
         frames = MovieLensFrames(raw_dir)
         domain = "movielens"
     elif dataset_name == "amazon":
         frames = AmazonFrames(raw_dir=raw_dir)
         domain = "amazon"
+    elif dataset_name == "sushi3-2016":
+        frames = Sushi3Frames(raw_dir=raw_dir, variant="b")
+        domain = "sushi"
     else:
         raise ValueError(f"Unknown dataset: {dataset_name}")
 
@@ -267,18 +281,29 @@ def load_item_db(dataset_name: str) -> Tuple[Dict[int, Dict[str, str]], str, Dic
     return item_db, domain, title_to_mid
 
 
-def init_models(args: argparse.Namespace, device: str, dataset_name: str) -> Tuple[TextEmbedder, HFChatRanker, HFOpenGenerator | None]:
+def init_models(
+    args: argparse.Namespace, device: str, dataset_name: str
+) -> Tuple[TextEmbedder, HFChatRanker, HFOpenGenerator | None]:
+    # IMPORTANT: isolate embedding caches per embedder model.
+    # Otherwise comparing two embedders back-to-back can reuse incompatible
+    # cached vectors (wrong dimension), leading to crashes or apparent "hangs".
+    import hashlib
+
+    embedder_id_hash = hashlib.sha256(str(args.embedder_model_id).encode("utf-8")).hexdigest()[:16]
+    embedder_cache = Path(f"data/cache/embeddings/{dataset_name}/{embedder_id_hash}")
     embedder = TextEmbedder(
         EmbedderConfig(
-            model_name="JJTsao/fine-tuned_movie_retriever-all-mpnet-base-v2",
+            model_name=str(args.embedder_model_id),
             device=device,
             progress=args.progress,
-            cache_dir=Path(f"data/cache/embeddings/{dataset_name}"),
+            cache_dir=embedder_cache,
             batch_size=args.embedder_batch_size,
         )
     )
 
-    ranker = HFChatRanker(HFChatRankerConfig(model_id=args.model_id, batch_size=args.llm_batch_size, temperature=args.temperature))
+    ranker = HFChatRanker(
+        HFChatRankerConfig(model_id=args.model_id, batch_size=args.llm_batch_size, temperature=args.temperature)
+    )
     generator = None
     if args.predict_mode == "open":
         generator = HFOpenGenerator(
@@ -309,7 +334,6 @@ def run_baseline(
     system_prompt: str,
     item_embedder: ItemEmbedder,
 ) -> pd.DataFrame:
-
     baseline_scorer = NonconformityScorer(
         embedder=embedder,
         cfg=ScoreConfig(lambda_fairness=args.lambda_fairness, tau_rho=args.tau_rho),
@@ -459,9 +483,15 @@ def compute_baseline_metrics(
     if args.predict_mode == "open" and "valid_at_k" in baseline_df.columns:
         metrics["ValidAtK.mean"] = float(np.mean(baseline_df["valid_at_k"]))
 
-    group_keys_joint = baseline_df[list(protected_cols)].astype(str).apply(
-        lambda r: "|".join([f"{c}={r[c]}" for c in protected_cols]), axis=1,
-    ).tolist()
+    group_keys_joint = (
+        baseline_df[list(protected_cols)]
+        .astype(str)
+        .apply(
+            lambda r: "|".join([f"{c}={r[c]}" for c in protected_cols]),
+            axis=1,
+        )
+        .tolist()
+    )
 
     sns = snsr_snsv_proxy_from_mid_lists(
         rec_mid_lists=ranked_lists,
@@ -569,9 +599,15 @@ def compute_facter_metrics(
     else:
         metrics["RelevantSetSize.mean"] = 1.0
 
-    group_keys_joint = out_df[list(protected_cols)].astype(str).apply(
-        lambda r: "|".join([f"{c}={r[c]}" for c in protected_cols]), axis=1,
-    ).tolist()
+    group_keys_joint = (
+        out_df[list(protected_cols)]
+        .astype(str)
+        .apply(
+            lambda r: "|".join([f"{c}={r[c]}" for c in protected_cols]),
+            axis=1,
+        )
+        .tolist()
+    )
     group_keys_per_attr = {attr: out_df[attr].astype(str).tolist() for attr in protected_cols}
 
     for iteration in range(1, args.max_iterations + 1):
@@ -649,7 +685,6 @@ def compute_facter_metrics(
     return metrics
 
 
-
 def save_outputs(processed_dir: Path, args: argparse.Namespace, pset: str, out_df: pd.DataFrame):
     out_path = processed_dir / "runs" / f"run_{args.model_id.replace('/', '_')}_{pset}_{args.predict_mode}.parquet"
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -708,34 +743,36 @@ def run_for_dataset(
         mcfg,
         tags={"dataset": dataset_name, "model_id": args.model_id, "predict_mode": args.predict_mode},
     ):
-        log_params({
-            "dataset": dataset_name,
-            "seed": args.seed,
-            "device": device,
-            "model_id": args.model_id,
-            "predict_mode": args.predict_mode,
-            "alpha": args.alpha,
-            "lambda_fairness": args.lambda_fairness,
-            "tau_rho": args.tau_rho,
-            "tau_x_l2": args.tau_x_l2,
-            "gamma": args.gamma,
-            "buffer_size": args.buffer_size,
-            "min_feature_count": args.min_feature_count,
-            "max_iterations": args.max_iterations,
-            "k": args.k,
-            "progress": bool(args.progress),
-            "protected.base_attrs": ",".join(base_attrs),
-            "protected.sweep": bool(args.sweep_protected_sets),
-            "protected.sets_count": len(protected_sets),
-            "repair.keying": args.repair_keying,
-            "baseline_prompts": args.baseline_prompts,
-            "skip_online": bool(args.skip_online),
-            "cfr_flip_strategy": args.cfr_flip_strategy,
-            "cfr_flip_attrs": args.cfr_flip_attrs or "default",
-            "llm_batch_size": args.llm_batch_size,
-            "embedder_batch_size": args.embedder_batch_size,
-            "temperature": args.temperature,
-        })
+        log_params(
+            {
+                "dataset": dataset_name,
+                "seed": args.seed,
+                "device": device,
+                "model_id": args.model_id,
+                "predict_mode": args.predict_mode,
+                "alpha": args.alpha,
+                "lambda_fairness": args.lambda_fairness,
+                "tau_rho": args.tau_rho,
+                "tau_x_l2": args.tau_x_l2,
+                "gamma": args.gamma,
+                "buffer_size": args.buffer_size,
+                "min_feature_count": args.min_feature_count,
+                "max_iterations": args.max_iterations,
+                "k": args.k,
+                "progress": bool(args.progress),
+                "protected.base_attrs": ",".join(base_attrs),
+                "protected.sweep": bool(args.sweep_protected_sets),
+                "protected.sets_count": len(protected_sets),
+                "repair.keying": args.repair_keying,
+                "baseline_prompts": args.baseline_prompts,
+                "skip_online": bool(args.skip_online),
+                "cfr_flip_strategy": args.cfr_flip_strategy,
+                "cfr_flip_attrs": args.cfr_flip_attrs or "default",
+                "llm_batch_size": args.llm_batch_size,
+                "embedder_batch_size": args.embedder_batch_size,
+                "temperature": args.temperature,
+            }
+        )
         log_text(json.dumps({"protected_sets": protected_sets}, indent=2), "config/protected_sets.json")
 
         with stage("seeding", timings):
@@ -844,11 +881,13 @@ def run_for_dataset(
                     prompt_cfg=prompt_cfg,
                     catalogue_mapper=catalogue_mapper,
                 )
-                log_metrics({
-                    P("offline.q_alpha0"): float(cal_res.q_alpha0),
-                    P("offline.S_mean"): float(np.mean(cal_res.scores_S)),
-                    P("offline.S_max"): float(np.max(cal_res.scores_S)),
-                })
+                log_metrics(
+                    {
+                        P("offline.q_alpha0"): float(cal_res.q_alpha0),
+                        P("offline.S_mean"): float(np.mean(cal_res.scores_S)),
+                        P("offline.S_max"): float(np.max(cal_res.scores_S)),
+                    }
+                )
                 if args.predict_mode == "open" and "valid_at_k" in cal_res.cal_df.columns:
                     try:
                         log_metrics({P("offline.ValidAtK.mean"): float(np.mean(cal_res.cal_df["valid_at_k"]))})
@@ -900,7 +939,9 @@ def run_for_dataset(
                         item_embedder=item_embedder,
                     )
                     log_metrics({P(f"{baseline_key}.{k}"): v for k, v in baseline_metrics.items()})
-                    log_text(json.dumps(baseline_metrics, indent=2), f"results/baseline_metrics_{pset}{prompt_suffix}.json")
+                    log_text(
+                        json.dumps(baseline_metrics, indent=2), f"results/baseline_metrics_{pset}{prompt_suffix}.json"
+                    )
                     print(f"Baseline {prompt_name} metrics: {baseline_metrics}")
                     baseline_metrics_all[prompt_name] = baseline_metrics
 
@@ -925,31 +966,37 @@ def run_for_dataset(
 
                 # Log per-iteration Q start/end and violations, plus Q-trace artifacts
                 for it_log in logs:
-                    log_metrics({
-                        P(f"iter{it_log.iteration}.q_alpha_start"): float(it_log.q_alpha_start),
-                        P(f"iter{it_log.iteration}.q_alpha_end"): float(it_log.q_alpha_end),
-                        P(f"iter{it_log.iteration}.q_updates.count"): float(max(0, len(it_log.q_trace) - 1)),
-                        P(f"iter{it_log.iteration}.violations.dynamicQ"): float(it_log.violations),
-                        P(f"iter{it_log.iteration}.violations.fixedQ0"): float(it_log.violations_at_Q0),
-                        P(f"iter{it_log.iteration}.S_mean"): float(it_log.mean_S),
-                        P(f"iter{it_log.iteration}.violations.dynamicQ.corrected"): float(it_log.violations_corr_dynamic),
-                        P(f"iter{it_log.iteration}.violations.fixedQ0.corrected"): float(it_log.violations_corr_at_Q0),
-                    }, step=it_log.iteration)
+                    log_metrics(
+                        {
+                            P(f"iter{it_log.iteration}.q_alpha_start"): float(it_log.q_alpha_start),
+                            P(f"iter{it_log.iteration}.q_alpha_end"): float(it_log.q_alpha_end),
+                            P(f"iter{it_log.iteration}.q_updates.count"): float(max(0, len(it_log.q_trace) - 1)),
+                            P(f"iter{it_log.iteration}.violations.dynamicQ"): float(it_log.violations),
+                            P(f"iter{it_log.iteration}.violations.fixedQ0"): float(it_log.violations_at_Q0),
+                            P(f"iter{it_log.iteration}.S_mean"): float(it_log.mean_S),
+                            P(f"iter{it_log.iteration}.violations.dynamicQ.corrected"): float(
+                                it_log.violations_corr_dynamic
+                            ),
+                            P(f"iter{it_log.iteration}.violations.fixedQ0.corrected"): float(
+                                it_log.violations_corr_at_Q0
+                            ),
+                        },
+                        step=it_log.iteration,
+                    )
 
                     # Q trajectory
                     log_text(
-                        json.dumps(
-                            {"q_trace": it_log.q_trace, "q_update_steps": it_log.q_update_steps},
-                            indent=2
-                        ),
-                        f"results/q_trace_{pset}_iter{it_log.iteration}.json"
+                        json.dumps({"q_trace": it_log.q_trace, "q_update_steps": it_log.q_update_steps}, indent=2),
+                        f"results/q_trace_{pset}_iter{it_log.iteration}.json",
                     )
 
                 log_dataframe(out_df, f"data/online_monitor_df_{pset}.json", format="json")
-            
+
             if logs:
                 q_star = float(logs[-1].q_alpha_end)
-                qstar_metrics = compute_qstar_counterfactuals(out_df, q_star=q_star, max_iterations=args.max_iterations)
+                qstar_metrics = compute_qstar_counterfactuals(
+                    out_df, q_star=q_star, max_iterations=args.max_iterations
+                )
 
                 log_metrics({P(k): v for k, v in qstar_metrics.items()})
                 log_text(json.dumps(qstar_metrics, indent=2), f"results/qstar_counterfactuals_{pset}.json")
@@ -997,17 +1044,17 @@ def main() -> None:
     total_t0 = time.perf_counter()
 
     for dataset_name in datasets:
-        print(f"\n\n{'#'*80}")
+        print(f"\n\n{'#' * 80}")
         print(f"Processing dataset: {dataset_name.upper()}")
-        print(f"{'#'*80}")
+        print(f"{'#' * 80}")
 
         for seed in seeds:
             seed_args = argparse.Namespace(**vars(args))
             seed_args.seed = seed
 
-            print(f"\n\n{'='*80}")
+            print(f"\n\n{'=' * 80}")
             print(f"Running seed: {seed}")
-            print(f"{'='*80}\n")
+            print(f"{'=' * 80}\n")
             run_for_dataset(dataset_name, seed_args, device, base_attrs, protected_sets, total_t0)
 
 

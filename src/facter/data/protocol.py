@@ -1,6 +1,6 @@
 # src/facter/data/protocol.py
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -18,7 +18,7 @@ class ProtocolConfig:
     stratify: bool = True
     protected_cols: Tuple[str, ...] = ("gender", "age", "occupation")
     relevance_mode: str = "single"  # "single" | "future_window" | "all_future"
-    relevance_window: int = 10      # only used when relevance_mode="future_window"
+    relevance_window: int = 10  # only used when relevance_mode="future_window"
     max_pos_in_candidates: Optional[int] = None
 
 
@@ -67,7 +67,9 @@ def _compute_relevant_mids(mids: List[int], t: int, cfg: ProtocolConfig) -> List
     if mode == "all_future":
         return [int(x) for x in mids[t:]]
 
-    raise ValueError(f"Unknown relevance_mode: {cfg.relevance_mode}. Expected 'single', 'future_window', or 'all_future'.")
+    raise ValueError(
+        f"Unknown relevance_mode: {cfg.relevance_mode}. Expected 'single', 'future_window', or 'all_future'."
+    )
 
 
 def build_interactions_ml(
@@ -148,7 +150,7 @@ def build_interactions_ml(
 
             rows.append(
                 {
-                    "uid": int(uid),
+                    "uid": str(uid),
                     "gender": gender,
                     "age": age,
                     "occupation": occupation,
@@ -186,18 +188,49 @@ def build_interactions(
         df = _process_ml(df1=df1, df2=df2)
     elif dataset == "amazon":
         df = _process_amazon(df1=df1, df2=df2, seed=cfg.seed)
+    elif dataset == "sushi3-2016":
+        # Sushi3 is an explicit ranking dataset (top-k order per user), not
+        # timestamped implicit feedback. We convert each user's top-k order into
+        # a pseudo-sequence so the rest of the pipeline (history -> target) works.
+        #
+        # Expected df1 columns (orders): uid, ranked_mids (list[int])
+        # Expected df2 columns (users): uid, gender, age, occupation
+        if "uid" not in df1.columns or "ranked_mids" not in df1.columns:
+            raise ValueError("Sushi interactions require df1 to have columns: uid, ranked_mids")
+        if "uid" not in df2.columns:
+            raise ValueError("Sushi users require df2 to have column: uid")
+
+        df = df1.merge(df2, on="uid", how="inner")
+
+        # Sushi3 provides user attributes, but this codebase assumes an
+        # "occupation" column exists throughout downstream fairness/eval logic.
+        # If it's missing (or you don't want to treat any Sushi field as occupation),
+        # we synthesize it deterministically like we do for Amazon.
+        if "occupation" not in df.columns:
+            rng = np.random.default_rng(cfg.seed)
+            df["occupation"] = rng.integers(0, 21, size=len(df)).astype(str)
+
+        df = df.reset_index(drop=True)
     else:
         raise ValueError(f"Unknown dataset: {dataset}")
 
     rows: List[Dict] = []
     for uid, g in df.groupby("uid", sort=False):
-        mids = g["mid"].astype(int).tolist()
+        if dataset == "sushi3-2016":
+            # One row per user with ranked_mids list.
+            mids = list(g["ranked_mids"].iloc[0])
+        else:
+            mids = g["mid"].astype(int).tolist()
         if len(mids) <= cfg.min_history:
             continue
 
         gender = g["gender"].iloc[0]
         age = int(g["age"].iloc[0])
-        occupation = int(g["occupation"].iloc[0])
+        # For Sushi, occupation may already be a string proxy.
+        try:
+            occupation = int(g["occupation"].iloc[0])
+        except Exception:
+            occupation = str(g["occupation"].iloc[0])
 
         for t in range(cfg.min_history, len(mids)):
             hist = mids[t - cfg.min_history : t]
@@ -269,13 +302,9 @@ def sample_and_split(
     rng = np.random.default_rng(cfg.seed)
 
     if len(interactions) < cfg.sample_interactions:
-        raise ValueError(
-            f"Not enough interactions: have {len(interactions)}, need {cfg.sample_interactions}"
-        )
+        raise ValueError(f"Not enough interactions: have {len(interactions)}, need {cfg.sample_interactions}")
 
-    sampled_idx = rng.choice(
-        len(interactions), size=cfg.sample_interactions, replace=False
-    )
+    sampled_idx = rng.choice(len(interactions), size=cfg.sample_interactions, replace=False)
     sampled = interactions.iloc[sampled_idx].reset_index(drop=True)
 
     n_test = int(round(cfg.test_size * len(sampled)))

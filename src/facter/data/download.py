@@ -7,9 +7,9 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
-from tqdm import tqdm
 
 import requests
+from tqdm import tqdm
 
 from .paths import DOWNLOADS_DIR, RAW_DIR, ensure_dirs
 
@@ -26,6 +26,13 @@ MOVIELENS_1M = DownloadSpec(
     name="ml-1m",
     url="https://files.grouplens.org/datasets/movielens/ml-1m.zip",
     extracted_subdir="ml-1m",
+)
+
+
+SUSHI3_2016 = DownloadSpec(
+    name="sushi3-2016",
+    url="https://www.kamishima.net/asset/sushi3-2016.zip",
+    extracted_subdir="sushi3-2016",
 )
 
 AMAZON_MOVIES_TV_5 = DownloadSpec(
@@ -65,9 +72,7 @@ def write_manifest(manifest_path: Path, payload: Dict) -> None:
         json.dump(payload, f, indent=2, sort_keys=True)
 
 
-def download_file(
-    url: str, out_path: Path, timeout: int = 60, verify: Optional[bool] = None
-) -> None:
+def download_file(url: str, out_path: Path, timeout: int = 60, verify: Optional[bool] = None) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with requests.get(url, stream=True, timeout=timeout, verify=verify) as r:
         r.raise_for_status()
@@ -116,6 +121,54 @@ def download_movielens_1m(force: bool = False) -> Path:
         "zip_path": str(zip_path),
         "zip_sha256": sha256_file(zip_path),
         "files_sha256": file_hashes,
+    }
+    write_manifest(manifest_path, payload)
+    return target_dir
+
+
+def download_sushi3_2016(force: bool = False) -> Path:
+    """
+    Downloads and extracts Sushi3-2016 into data/raw/sushi3-2016/.
+    Writes data/raw/sushi3-2016/manifest.json with URL + hashes.
+    Returns the extracted directory path.
+    """
+
+    ensure_dirs()
+    target_dir = RAW_DIR / "sushi3-2016"
+    manifest_path = target_dir / "manifest.json"
+    zip_path = DOWNLOADS_DIR / "sushi3-2016.zip"
+
+    # We check for a couple of expected files to decide if extraction already happened.
+    expected_files = [
+        "sushi3.idata",
+        "sushi3.udata",
+    ]
+    if target_dir.exists() and all((target_dir / f).exists() for f in expected_files) and not force:
+        return target_dir
+
+    download_file(SUSHI3_2016.url, zip_path)
+
+    # Extract (zip contains "sushi3-2016/" folder)
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zf.extractall(RAW_DIR)
+
+    if not target_dir.exists():
+        raise RuntimeError(f"Expected extracted dir not found: {target_dir}")
+
+    files_sha256: Dict[str, str] = {}
+    for fn in expected_files:
+        p = target_dir / fn
+        if not p.exists():
+            raise RuntimeError(f"Missing expected file after extraction: {p}")
+        files_sha256[fn] = sha256_file(p)
+
+    payload = {
+        "dataset": SUSHI3_2016.name,
+        "url": SUSHI3_2016.url,
+        "downloaded_at_unix": int(time.time()),
+        "zip_path": str(zip_path),
+        "zip_sha256": sha256_file(zip_path),
+        "files_sha256": files_sha256,
     }
     write_manifest(manifest_path, payload)
     return target_dir
@@ -193,5 +246,8 @@ def download_dataset(dataset: str = "ml-1m", force: bool = False) -> Path:
 
     elif dataset == "amazon":
         target_dir = download_amazon_movies_tv_5(force=force)
+
+    elif dataset == "sushi3-2016":
+        target_dir = download_sushi3_2016(force=force)
 
     return target_dir
