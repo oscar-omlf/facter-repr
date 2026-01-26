@@ -200,7 +200,20 @@ def build_interactions(
         if "uid" not in df2.columns:
             raise ValueError("Sushi users require df2 to have column: uid")
 
-        df = df1.merge(df2, on="uid", how="inner")
+        df = df1.merge(df2, on="uid", how="inner", suffixes=("_order", "_user"))
+
+        # Normalize possibly-collided demographics back to canonical names.
+        # Sushi3Frames.orders already carries gender/age, and users also has them.
+        if "gender" not in df.columns:
+            if "gender_order" in df.columns:
+                df["gender"] = df["gender_order"]
+            elif "gender_user" in df.columns:
+                df["gender"] = df["gender_user"]
+        if "age" not in df.columns:
+            if "age_order" in df.columns:
+                df["age"] = df["age_order"]
+            elif "age_user" in df.columns:
+                df["age"] = df["age_user"]
 
         # Sushi3 provides user attributes, but this codebase assumes an
         # "occupation" column exists throughout downstream fairness/eval logic.
@@ -215,77 +228,144 @@ def build_interactions(
         raise ValueError(f"Unknown dataset: {dataset}")
 
     rows: List[Dict] = []
-    for uid, g in df.groupby("uid", sort=False):
-        if dataset == "sushi3-2016":
-            # One row per user with ranked_mids list.
-            mids = list(g["ranked_mids"].iloc[0])
-        else:
-            mids = g["mid"].astype(int).tolist()
-        if len(mids) <= cfg.min_history:
-            continue
-
-        gender = g["gender"].iloc[0]
-        age = int(g["age"].iloc[0])
-        # For Sushi, occupation may already be a string proxy.
-        try:
-            occupation = int(g["occupation"].iloc[0])
-        except Exception:
-            occupation = str(g["occupation"].iloc[0])
-
-        for t in range(cfg.min_history, len(mids)):
-            hist = mids[t - cfg.min_history : t]
-            target = int(mids[t])
-
-            relevant = _compute_relevant_mids(mids, t, cfg)
-            if not relevant:
+    if dataset == "sushi3-2016":
+        # Sushi orders are already one row per user (and only top-10 items).
+        # Grouping by uid can collapse everything (uids repeat across rows) and
+        # produce empty interaction sets; instead, iterate row-wise.
+        for _, r in df.iterrows():
+            uid = r["uid"]
+            mids = list(r["ranked_mids"])
+            # Sushi provides only a top-10 list. If min_history==10, we'd otherwise
+            # have no prediction positions. For Sushi we allow one interaction by
+            # using the last item as target and the preceding items as history.
+            if len(mids) < cfg.min_history:
                 continue
 
+            gender = r["gender"]
+            age = int(r["age"])
             try:
-                hist_titles = [item_db[int(m)]["title"] for m in hist]
-                target_title = item_db[int(target)]["title"]
-            except KeyError:
+                occupation = int(r["occupation"])
+            except Exception:
+                occupation = str(r["occupation"])
+
+            start_t = cfg.min_history - 1 if len(mids) == cfg.min_history else cfg.min_history
+            for t in range(start_t, len(mids)):
+                hist = mids[t - cfg.min_history : t]
+                target = int(mids[t])
+
+                relevant = _compute_relevant_mids(mids, t, cfg)
+                if not relevant:
+                    continue
+
+                try:
+                    hist_titles = [item_db[int(m)]["title"] for m in hist]
+                    target_title = item_db[int(target)]["title"]
+                except KeyError:
+                    continue
+
+                rel_titles: List[str] = []
+                rel_mids_clean: List[int] = []
+                for m in relevant:
+                    info = item_db.get(int(m))
+                    if info is None:
+                        continue
+                    title = str(info.get("title", "")).strip()
+                    if not title:
+                        continue
+                    rel_mids_clean.append(int(m))
+                    rel_titles.append(title)
+
+                if target not in rel_mids_clean:
+                    rel_mids_clean.insert(0, target)
+                    rel_titles.insert(0, target_title)
+
+                seen = set()
+                rel_mids_dedup: List[int] = []
+                rel_titles_dedup: List[str] = []
+                for m, tt in zip(rel_mids_clean, rel_titles):
+                    if int(m) in seen:
+                        continue
+                    seen.add(int(m))
+                    rel_mids_dedup.append(int(m))
+                    rel_titles_dedup.append(tt)
+
+                rows.append(
+                    {
+                        "uid": str(uid),
+                        "gender": gender,
+                        "age": age,
+                        "occupation": occupation,
+                        "history_mids": hist,
+                        "history_titles": hist_titles,
+                        "target_mid": int(target),
+                        "target_title": target_title,
+                        "relevant_mids": rel_mids_dedup,
+                        "relevant_titles": rel_titles_dedup,
+                    }
+                )
+    else:
+        for uid, g in df.groupby("uid", sort=False):
+            mids = g["mid"].astype(int).tolist()
+            if len(mids) <= cfg.min_history:
                 continue
 
-            rel_titles: List[str] = []
-            rel_mids_clean: List[int] = []
-            for m in relevant:
-                info = item_db.get(int(m))
-                if info is None:
-                    continue
-                title = str(info.get("title", "")).strip()
-                if not title:
-                    continue
-                rel_mids_clean.append(int(m))
-                rel_titles.append(title)
+            gender = g["gender"].iloc[0]
+            age = int(g["age"].iloc[0])
+            occupation = int(g["occupation"].iloc[0])
 
-            if target not in rel_mids_clean:
-                rel_mids_clean.insert(0, target)
-                rel_titles.insert(0, target_title)
-
-            seen = set()
-            rel_mids_dedup: List[int] = []
-            rel_titles_dedup: List[str] = []
-            for m, tt in zip(rel_mids_clean, rel_titles):
-                if int(m) in seen:
+            for t in range(cfg.min_history, len(mids)):
+                hist = mids[t - cfg.min_history : t]
+                target = int(mids[t])
+                relevant = _compute_relevant_mids(mids, t, cfg)
+                if not relevant:
                     continue
-                seen.add(int(m))
-                rel_mids_dedup.append(int(m))
-                rel_titles_dedup.append(tt)
 
-            rows.append(
-                {
-                    "uid": str(uid),
-                    "gender": gender,
-                    "age": age,
-                    "occupation": occupation,
-                    "history_mids": hist,
-                    "history_titles": hist_titles,
-                    "target_mid": int(target),
-                    "target_title": target_title,
-                    "relevant_mids": rel_mids_dedup,
-                    "relevant_titles": rel_titles_dedup,
-                }
-            )
+                try:
+                    hist_titles = [item_db[int(m)]["title"] for m in hist]
+                    target_title = item_db[int(target)]["title"]
+                except KeyError:
+                    continue
+
+                rel_titles: List[str] = []
+                rel_mids_clean: List[int] = []
+                for m in relevant:
+                    info = item_db.get(int(m))
+                    if info is None:
+                        continue
+                    title = str(info.get("title", "")).strip()
+                    if not title:
+                        continue
+                    rel_mids_clean.append(int(m))
+                    rel_titles.append(title)
+
+                if target not in rel_mids_clean:
+                    rel_mids_clean.insert(0, target)
+                    rel_titles.insert(0, target_title)
+
+                seen = set()
+                rel_mids_dedup: List[int] = []
+                rel_titles_dedup: List[str] = []
+                for m, tt in zip(rel_mids_clean, rel_titles):
+                    if int(m) in seen:
+                        continue
+                    seen.add(int(m))
+                    rel_mids_dedup.append(int(m))
+                    rel_titles_dedup.append(tt)
+
+                rows.append(
+                    {
+                        "uid": str(uid),
+                        "gender": gender,
+                        "age": age,
+                        "occupation": occupation,
+                        "history_mids": hist,
+                        "history_titles": hist_titles,
+                        "target_mid": int(target),
+                        "target_title": target_title,
+                        "relevant_mids": rel_mids_dedup,
+                        "relevant_titles": rel_titles_dedup,
+                    }
+                )
 
     return pd.DataFrame(rows)
 

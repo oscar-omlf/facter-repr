@@ -22,6 +22,12 @@ def main() -> None:
     p.add_argument("--dataset", type=str, default="ml-1m", choices=["ml-1m", "amazon", "sushi3-2016"])
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--n", type=int, default=2500)
+    p.add_argument(
+        "--min_history",
+        type=int,
+        default=10,
+        help="Number of history items before predicting the next item (default: 10).",
+    )
     p.add_argument("--n_candidates", type=int, default=100)
 
     # multi-target relevance config
@@ -75,6 +81,7 @@ def main() -> None:
     item_pool = np.asarray(list(item_db.keys()), dtype=np.int64)
 
     cfg = ProtocolConfig(
+        min_history=args.min_history,
         sample_interactions=args.n,
         seed=args.seed,
         n_candidates=args.n_candidates,
