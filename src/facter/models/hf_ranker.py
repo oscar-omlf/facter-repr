@@ -117,6 +117,7 @@ class HFChatRankerConfig:
     torch_dtype: str = "auto"  # "auto" | "float16" | "bfloat16"
     device_map: str = "auto"  # passed to transformers
     trust_remote_code: bool = False
+    seed: Optional[int] = None
 
 
 class HFChatRanker:
@@ -167,14 +168,18 @@ class HFChatRanker:
     #     return _sha256(json.dumps(blob, ensure_ascii=False, sort_keys=True))
 
     def _cache_key(self, prompt_rank: str, candidate_titles: Sequence[str], system_prompt: Optional[str]) -> str:
+        rank_cfg = {
+            "max_new_tokens": int(self.cfg.max_new_tokens),
+            "temperature": float(self.cfg.temperature),
+            "top_p": float(self.cfg.top_p),
+            "repetition_penalty": float(self.cfg.repetition_penalty),
+        }
+        if self.cfg.seed is not None:
+            rank_cfg["seed"] = int(self.cfg.seed)
+
         blob = {
             "model_id": self.cfg.model_id,
-            "rank_cfg": {
-                "max_new_tokens": int(self.cfg.max_new_tokens),
-                "temperature": float(self.cfg.temperature),
-                "top_p": float(self.cfg.top_p),
-                "repetition_penalty": float(self.cfg.repetition_penalty),
-            },
+            "rank_cfg": rank_cfg,
             "system": system_prompt or "",
             "user": prompt_rank,
             "candidates": list(candidate_titles),

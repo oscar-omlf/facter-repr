@@ -278,11 +278,23 @@ def init_models(args: argparse.Namespace, device: str, dataset_name: str) -> Tup
         )
     )
 
-    ranker = HFChatRanker(HFChatRankerConfig(model_id=args.model_id, batch_size=args.llm_batch_size, temperature=args.temperature))
+    ranker = HFChatRanker(
+        HFChatRankerConfig(
+            model_id=args.model_id,
+            batch_size=args.llm_batch_size,
+            temperature=args.temperature,
+            seed=args.seed,
+        )
+    )
     generator = None
     if args.predict_mode == "open":
         generator = HFOpenGenerator(
-            HFGenConfig(model_id=args.model_id, batch_size=args.llm_batch_size, temperature=args.temperature),
+            HFGenConfig(
+                model_id=args.model_id,
+                batch_size=args.llm_batch_size,
+                temperature=args.temperature,
+                seed=args.seed,
+            ),
             tokenizer=ranker.tokenizer,
             model=ranker.model,
         )

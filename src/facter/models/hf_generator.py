@@ -52,6 +52,7 @@ class HFGenConfig:
     torch_dtype: str = "auto"  # "auto" | "float16" | "bfloat16"
     device_map: str = "auto"  # passed to transformers
     trust_remote_code: bool = False
+    seed: Optional[int] = None
 
 
 def parse_json_list(text: str, k: int) -> List[str]:
@@ -168,14 +169,18 @@ class HFOpenGenerator:
     #     return _sha256(json.dumps(blob, ensure_ascii=False, sort_keys=True))
 
     def _cache_key(self, prompts: Sequence[str], system_prompts: Sequence[Optional[str]], k: int) -> str:
+        gen_cfg = {
+            "max_new_tokens": int(self.cfg.max_new_tokens),
+            "temperature": float(self.cfg.temperature),
+            "top_p": float(self.cfg.top_p),
+            "repetition_penalty": float(self.cfg.repetition_penalty),
+        }
+        if self.cfg.seed is not None:
+            gen_cfg["seed"] = int(self.cfg.seed)
+
         blob = {
             "model_id": self.cfg.model_id,
-            "gen_cfg": {
-                "max_new_tokens": int(self.cfg.max_new_tokens),
-                "temperature": float(self.cfg.temperature),
-                "top_p": float(self.cfg.top_p),
-                "repetition_penalty": float(self.cfg.repetition_penalty),
-            },
+            "gen_cfg": gen_cfg,
             "system": [s or "" for s in system_prompts],
             "user": list(prompts),
             "k": int(k),
