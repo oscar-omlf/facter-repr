@@ -49,7 +49,7 @@ class HFGenConfig:
     repetition_penalty: float = 1.2
     batch_size: int = 8
     cache_dir: Path = Path("data/cache/generator")
-    torch_dtype: str = "auto"  # "auto" | "float16" | "bfloat16"
+    torch_dtype: str = "bfloat16"  # "auto" | "float16" | "bfloat16"
     device_map: str = "auto"  # passed to transformers
     trust_remote_code: bool = False
     seed: Optional[int] = None
