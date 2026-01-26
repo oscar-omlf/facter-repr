@@ -136,7 +136,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cfr_flip_attr", type=str, default="gender", choices=list(ALLOWED_PROTECTED))
     p.add_argument("--k", type=int, default=10)
     p.add_argument("--predict_mode", type=str, default="rank", choices=["rank", "open"])
-    p.add_argument("--llm_batch_size", type=int, default=32, help="Batch size used when batching LLM calls")
+    p.add_argument("--llm_batch_size", type=int, default=16, help="Batch size used when batching LLM calls")
     p.add_argument("--embedder_batch_size", type=int, default=256, help="Batch size used when batching LLM calls")
     p.add_argument("--temperature", type=float, default=0.7, help="Temperature for open-ended generation")
     p.add_argument(
