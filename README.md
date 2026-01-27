@@ -88,11 +88,11 @@ python scripts/run_facter.py \
   --base_model llama3 \
    --seeds 0 \
    --protected_attrs gender,age,occupation \
-   --max_iterations 5 \
+   --max_iterations 3 \
    --progress \
    --predict_mode open \
    --datasets ml-1m,amazon \
-   --baseline_prompts both \
+   --baseline_prompts both 
 ```
 
 Example (override with an explicit HF model id):
@@ -141,10 +141,63 @@ mlflow ui --backend-store-uri "sqlite:///./mlflow.db"
 - The SentenceTransformer embedder caches embeddings in `data/cache/embeddings/`.
 - Running large LLMs locally typically requires a GPU with sufficient VRAM.
 
-If you use gated models (e.g., certain LLaMA weights), you may need:
+**For LLaMA models:** you must have a Hugging Face account with access to the model weights and set `HF_TOKEN` (otherwise model download will fail). 
+
+Set `HF_TOKEN` on your host before starting the container:
+
+* **Linux/macOS**
+
+  ```bash
+  export HF_TOKEN=hf_...
+  ```
+* **Windows PowerShell**
+
+  ```powershell
+  $env:HF_TOKEN="hf_..."
+  ```
+
+## Setup Docker / Compose (persistent environment)
+
+### Prerequisites
+
+* Docker + Docker Compose installed.
+* For using LLama models the HF_TOKEN environment variable must be set as described above.
+
+### First run (build image + create the environment)
+
+The first time you run this, Docker will:
+
+* pull the base image,
+* create the conda environment from `environment.yml`,
+* install this repo inside the image (`pip install -e .`),
+* start a persistent container you can `exec` into.
+
+Start the GPU environment:
+
 ```bash
-export HF_TOKEN=...
+docker compose --profile gpu up -d --build
+docker compose exec env-gpu bash
 ```
+
+You are now inside the container (conda env active). Run the same experiment commands shown in the sections above, python scripts/build_dataset.y ..., and python scripts/run_facter.py ....
+
+### Repeated runs (reuse the already-built image/container)
+
+On subsequent runs, you do not need to rebuild anything.
+
+Start (GPU):
+
+```bash
+docker compose --profile gpu up -d
+docker compose exec env-gpu bash
+```
+
+Stop:
+
+```bash
+docker compose down
+```
+
 
 ## Contributions
 ...

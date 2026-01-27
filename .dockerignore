@@ -1,0 +1,11 @@
+.git
+__pycache__/
+*.pyc
+outputs/
+data/
+mlruns/
+mlflow.db
+wandb/
+build/
+dist/
+*.egg-info/

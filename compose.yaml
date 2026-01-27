@@ -1,0 +1,38 @@
+# compose.yaml
+x-base: &base
+  build: .
+  image: facter:latest
+  tty: true
+  stdin_open: true
+  volumes:
+    - ./data:/app/data
+    - ./outputs:/app/outputs
+    - ./mlruns:/app/mlruns
+    - ./mlflow:/app/mlflow
+
+  # To use a Hugging Face token, set it in your shell before running compose:
+  #   Linux/macOS: export HF_TOKEN=hf_...    |  Windows PowerShell: $env:HF_TOKEN="hf_..."
+  # Compose will pass HF_TOKEN through into the container as an environment variable.
+  environment:
+    - HF_TOKEN
+
+services:
+  # CPU default: always works, no GPU requested
+  env:
+    <<: *base
+    container_name: facter-env
+    command: [ "bash", "-lc", "sleep infinity" ]
+
+  # GPU optional: only starts when profile gpu is enabled
+  env-gpu:
+    <<: *base
+    container_name: facter-env-gpu
+    profiles: [ "gpu" ]
+    command: [ "bash", "-lc", "sleep infinity" ]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [ "0" ] # or use count: 1
+              capabilities: [ gpu ]
