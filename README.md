@@ -4,21 +4,50 @@ This repository is an **independent reimplementation** and **reproducibility stu
 
 **FACTER: Fairness-Aware Conformal Thresholding and Prompt Engineering for Enabling Fair LLM-Based Recommender Systems**  
 Arya Fayyazi, Mehdi Kamal, Massoud Pedram (ICML 2025)  
-Paper (arXiv): https://arxiv.org/abs/2502.02966
+Paper (arXiv): https://arxiv.org/abs/2502.02966Arya  
+Code (Github): https://github.com/AryaFayyazi/FACTERPaper
 
 FACTER is a post-hoc wrapper around a black-box LLM recommender that:
-1) calibrates a **fairness threshold** using conformal prediction (offline), and  
+
+1) calibrates a **fairness threshold** using conformal prediction (offline), and
 2) iteratively performs **prompt repair** when fairness violations are detected (online), without retraining the LLM.
 
-> Note: This repo focuses on the MovieLens-1M reproduction path first. Amazon support and UP5 are planned/partial.
+This repo contains dataset builders and an end-to-end experiment runner for:
 
-...
+- MovieLens-1M (`ml-1m`)
+- Amazon Movies & TV 5-core + metadata (`amazon`)
+
+## What you can reproduce
+
+This repository is intended to reproduce the full pipeline behavior (dataset construction, baselines, offline calibration, online monitoring, and MLflow logging).
+Exact metric parity with the reproduction paper may depend on model choice, compute budget (GPU vs CPU), and prompt/model availability.
 
 ## Repository structure
 
+*High-level map* (selected):
+
+```text
+.
+├─ src/facter/                 # Library code
+│  ├─ data/                    # Download + dataset building utilities
+│  ├─ eval/                    # Metrics + baselines + counterfactual evaluation
+│  ├─ fairness/                # Offline calibration + online monitoring/scoring
+│  ├─ models/                  # HF generator/ranker + embedders + model registry
+│  ├─ prompting/               # Prompt repair
+│  └─ tracking/                # MLflow logging wrappers
+├─ scripts/                    # CLI entrypoints
+│  ├─ download_data.py
+│  ├─ build_dataset.py
+│  └─ run_facter.py             # Main experiment runner
+├─ data/                       # Raw/processed data + caches (created at runtime)
+├─ mlflow.db                   # Default MLflow store (SQLite)
+└─ results_analysis.ipynb       # Example analysis notebook
+```
+
 
 ## Setup (conda)
-> NOTE: Ideally we will want to add Docker and/or Singularity for maximum reproducibility.
+
+Conda is the recommended setup. Docker/Compose is provided as an optional alternative.
 
 ### 1) Create environment
 ```bash
@@ -38,13 +67,25 @@ pytest
 ```
 
 ## Download and preprocess data
-### Download MovieLens-1M
+### Download raw data
+
+MovieLens-1M:
 ```bash
 python scripts/download_data.py --dataset ml-1m
 ```
 
+Amazon:
+```bash
+python scripts/download_data.py --dataset amazon
+```
+
 ### Build the processed split + prompts
-This produces a deterministic sample of interactions, then a 70/30 calibration/test split, then per-row prompts.
+
+You must build the processed dataset for each dataset you want to run.
+
+This produces a deterministic sample of interactions, then a 70/30 calibration/test split, and then per-row prompts.
+
+MovieLens-1M:
 ```bash
 python scripts/build_dataset.py \
   --dataset ml-1m \
@@ -54,7 +95,9 @@ python scripts/build_dataset.py \
   --relevance_mode future_window \
   --relevance_window 10
 ```
-```
+
+Amazon:
+```bash
 python scripts/build_dataset.py \
   --dataset amazon \
   --seed 0 \
@@ -65,19 +108,27 @@ python scripts/build_dataset.py \
 ```
 
 Outputs:
-- `data/processed/ml-1m/cal/dataset.jsonl`
-- `data/processed/ml-1m/test/dataset.jsonl`
-- `data/processed/ml-1m/meta.json`
+- MovieLens-1M:
+  - `data/processed/ml-1m/cal/dataset.jsonl`
+  - `data/processed/ml-1m/test/dataset.jsonl`
+  - `data/processed/ml-1m/meta.json`
+- Amazon:
+  - `data/processed/amazon/cal/dataset.jsonl`
+  - `data/processed/amazon/test/dataset.jsonl`
+  - `data/processed/amazon/meta.json`
 
-## Running experiments (MovieLens-1M)
-### End-to-end FACTER (offline + online)
-This repo runs **local Hugging Face models** for the LLM ranker/generator.
+## Running experiments
+
+The main entrypoint is `scripts/run_facter.py`.
+This repo runs local models downloaded from HugggingFace for the LLM ranker/generator.
+
+GPU is recommended. CPU runs are supported but can be very slow.
 
 #### Model selection
 You can choose a model in two ways:
 
-1) **Recommended:** pick a short name via `--base_model`.
-  This resolves to a Hugging Face `model_id` via the registry in `src/facter/models/model_registry.py` (`BASE_MODELS`).
+1) **Recommended:** pick a short name via `--base_model`. (Available options: `llama3`, `llama2`, `mistral`)
+  This resolves to a HuggingFace `model_id` via the registry in `src/facter/models/model_registry.py` (`BASE_MODELS`).
 
 2) **Override:** pass a Hugging Face `--model_id` directly.
   If provided, it overrides `--base_model`.
@@ -86,13 +137,13 @@ Example (use a base model preset):
 ```bash
 python scripts/run_facter.py \
   --base_model llama3 \
-   --seeds 0 \
-   --protected_attrs gender,age,occupation \
-   --max_iterations 3 \
-   --progress \
-   --predict_mode open \
-   --datasets ml-1m,amazon \
-   --baseline_prompts both 
+  --seeds 0 \
+  --protected_attrs gender,age,occupation \
+  --max_iterations 3 \
+  --progress \
+  --predict_mode open \
+  --datasets ml-1m,amazon \
+  --baseline_prompts both
 ```
 
 Example (override with an explicit HF model id):
@@ -106,7 +157,7 @@ python scripts/run_facter.py \
   --progress \
   --predict_mode open \
   --datasets ml-1m \
-  --baseline_prompts both \
+  --baseline_prompts both 
 ```
 
 This will:
@@ -114,10 +165,10 @@ This will:
 - run offline conformal calibration to compute Q_alpha^(0),
 - run online iterations with violation-triggered prompt repair + threshold update,
 - log results to MLflow (default: `sqlite:///./mlflow.db`),
-- save a per-example table to `data/processed/ml-1m/runs/*.parquet`.
+- save per-example tables under `data/processed/<dataset>/runs/*.parquet`.
 
-### Hyperparameters (paper defaults):
-The default values I am using (TODO: Triple check):
+### Hyperparameters (FACTER paper defaults):
+
 - `--tau_rho 0.90`
 - `--lambda_fairness 0.7`
 - `--gamma 0.95`
@@ -129,19 +180,31 @@ This repo logs:
 - run parameters (seed, hyperparameters, dataset config)
 - metrics (baseline + per-iteration FACTER summary)
 - a JSON summary artifact
-- TODO: Add more?
 
 To inspect runs:
 ```bash
 mlflow ui --backend-store-uri "sqlite:///./mlflow.db"
 ```
 
+Then open the MLflow UI and filter by experiment/run to view metrics and logged artifacts.
+
 ## Caching and performance notes
 - The HF ranker caches rankings in `data/cache/ranker/` keyed by (system_prompt, user_prompt, candidates).
 - The SentenceTransformer embedder caches embeddings in `data/cache/embeddings/`.
 - Running large LLMs locally typically requires a GPU with sufficient VRAM.
 
-**For LLaMA models:** you must have a Hugging Face account with access to the model weights and set `HF_TOKEN` (otherwise model download will fail). 
+### Hugging Face access / `HF_TOKEN`
+
+Some models are gated on Hugging Face and require an access-approved account and a token:
+
+- https://huggingface.co/meta-llama/Llama-2-7b
+- https://huggingface.co/meta-llama/Meta-Llama-3-8B
+
+Other models (e.g. Mistral) are typically ungated:
+
+- https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.2
+
+If you use a gated model and do not set `HF_TOKEN`, downloading the weights will fail.
 
 Set `HF_TOKEN` on your host before starting the container:
 
@@ -156,12 +219,20 @@ Set `HF_TOKEN` on your host before starting the container:
   $env:HF_TOKEN="hf_..."
   ```
 
+* **Windows (cmd.exe)**
+
+  ```bat
+  set HF_TOKEN=hf_...
+  ```
+
 ## Setup Docker / Compose (persistent environment)
+
+Docker is optional. If you prefer a conda-native workflow, you can ignore this section.
 
 ### Prerequisites
 
 * Docker + Docker Compose installed.
-* For using LLama models the HF_TOKEN environment variable must be set as described above.
+* For using gated models the HF_TOKEN environment variable must be set as described above.
 
 ### First run (build image + create the environment)
 
@@ -179,7 +250,7 @@ docker compose --profile gpu up -d --build
 docker compose exec env-gpu bash
 ```
 
-You are now inside the container (conda env active). Run the same experiment commands shown in the sections above, python scripts/build_dataset.y ..., and python scripts/run_facter.py ....
+You are now inside the container (conda env active). Run the same experiment commands shown in the sections above, `python scripts/build_dataset.py ...`, and `python scripts/run_facter.py ....`
 
 ### Repeated runs (reuse the already-built image/container)
 
@@ -203,4 +274,4 @@ docker compose down
 ...
 
 ## License
-...
+This repository is for academic, non-commercial use only. For other uses, please contact the authors.
