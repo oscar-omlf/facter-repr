@@ -1,12 +1,11 @@
-"""Model registry for selecting local Hugging Face baseline models.
+"""Provide a registry of HuggingFace model identifiers used by this repo.
 
-This module defines a small mapping from short names ("base models") to the
-Hugging Face `model_id` used by HFChatRanker/HFOpenGenerator.
+This module defines a mapping from short model nicknames ("base models") to
+HuggingFace ``model_id`` strings.
 
-Notes:
-- All models are assumed to be run locally via `transformers`.
-- Ranker and generator share the same `model_id` in this repo.
-- Parsing differences (e.g. Mistral vs Llama) will be handled later.
+The values are used to configure local Transformers backends such as
+:class:`~facter.models.hf_ranker.HFChatRanker` and
+:class:`~facter.models.hf_generator.HFOpenGenerator`.
 """
 
 from __future__ import annotations
@@ -19,3 +18,6 @@ BASE_MODELS: Dict[str, Dict[str, str]] = {
     "llama2": {"model_id": "meta-llama/Llama-2-7b-chat-hf"},
     "mistral": {"model_id": "mistralai/Mistral-7B-Instruct-v0.2"},
 }
+
+# Public constant:
+#   BASE_MODELS maps a short name to a dict currently holding ``model_id``.
