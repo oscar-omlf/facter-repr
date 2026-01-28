@@ -76,14 +76,13 @@ class HFGenConfig:
             ``model.generate``.
         batch_size (int): Number of prompts processed per generation batch.
         cache_dir (Path): Root directory for on-disk generation cache.
-        torch_dtype (str): TODO(doc): clarify whether this is currently used;
+        torch_dtype (str): Data type used for model weights (e.g., "float16").
             dtype selection in :class:`HFOpenGenerator` depends on CUDA
             availability.
-        device_map (str): TODO(doc): clarify whether this is currently used;
-            device mapping in :class:`HFOpenGenerator` depends on CUDA
-            availability.
-        trust_remote_code (bool): TODO(doc): clarify whether this is currently
-            used (not forwarded directly in current implementation).
+        device_map (str): Device mapping in :class:`HFOpenGenerator` depends on
+            CUDA availability.
+        trust_remote_code (bool): Whether to allow using remote code (e.g., for
+            model loading).
         seed (Optional[int]): Optional seed included in the cache key.
     """
     model_id: str

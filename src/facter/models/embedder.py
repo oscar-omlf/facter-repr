@@ -41,7 +41,7 @@ class EmbedderConfig:
         normalize (bool): Whether to request normalized embeddings from the
             underlying encoder.
         cache_dir (Path): Directory holding cache files and manifest.
-        progress (bool): TODO(doc): clarify whether/where this flag is used.
+        progress (bool): Whether to display a progress bar during encoding.
         embeddings_per_file (int): Number of embeddings to store in each
             compressed batch file.
         max_memory_cache (int): Maximum number of embeddings retained in the
