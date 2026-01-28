@@ -201,7 +201,7 @@ def log_dataframe(df: Any, artifact_path: str, format: str = "parquet") -> None:
     - ``json``: calls ``df.to_json`` (with ``orient='records'`` and ``lines=True``)
 
     Args:
-        df (Any): TODO(doc): clarify exact expected type (e.g., pandas DataFrame).
+        df (Any): DataFrame-like object.
         artifact_path (str): Artifact path including filename (e.g.,
             "data/calibration.parquet").
         format (str): File format: "parquet", "csv", or "json".

@@ -26,8 +26,7 @@ class PromptRepairConfig:
             title) to be turned into an Avoid rule.
         max_rules (int): Maximum number of rules to mine per key.
         domain (str): Domain identifier used to select feature extraction
-            behavior. TODO(doc): clarify how non-MovieLens domains should
-            handle feature extraction.
+            behavior. Supported values are ``"movielens"`` and ``"amazon"``.
     """
     buffer_size: int = 50
     protected_cols: Tuple[str, ...] = ("gender",)  # which columns exist in df / prompts
