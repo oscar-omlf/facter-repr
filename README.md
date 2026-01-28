@@ -50,7 +50,7 @@ python scripts/build_dataset.py \
   --dataset ml-1m \
   --seed 0 \
   --n 2500 \
-  --n_candidates 100 \
+  --n_candidates 40 \
   --relevance_mode future_window \
   --relevance_window 10
 ```
@@ -59,7 +59,7 @@ python scripts/build_dataset.py \
   --dataset amazon \
   --seed 0 \
   --n 3750 \
-  --n_candidates 100 \
+  --n_candidates 40 \
   --relevance_mode future_window \
   --relevance_window 10
 ```

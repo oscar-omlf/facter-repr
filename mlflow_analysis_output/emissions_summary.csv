@@ -1,0 +1,11 @@
+metric,value
+total_duration_seconds,488794.591228641
+total_duration_hours,135.77627534128916
+total_emissions_kg_co2,8.71582396084849
+total_energy_kwh,32.56766618905953
+num_runs,31.0
+avg_duration_seconds,15767.567458988418
+avg_emissions_kg_co2,0.2811556116402739
+avg_energy_kwh,1.0505698770664365
+total_water_liters,0.0
+avg_water_liters,0.0
