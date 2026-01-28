@@ -1,3 +1,18 @@
+"""Implement the FACTER online monitoring loop.
+
+This module defines the online phase used to iteratively evaluate model outputs
+for fairness violations, update a violation buffer, and adapt a threshold over
+multiple iterations.
+
+The implementation records per-iteration diagnostics (scores, thresholds, and
+violation counts) and returns an augmented DataFrame plus a list of iteration
+logs.
+
+The overall control flow corresponds to the paper's online calibration phase,
+including violation-triggered prompt updates and threshold adaptation.
+(Paper: Sec. 3.3 / Eq. 10 / Eq. 11 / Alg. 1)
+"""
+
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple, Any, List
 from collections import deque
@@ -18,6 +33,19 @@ from facter.prompting.repair import PromptRepairEngine
 
 @dataclass(frozen=True)
 class OnlineMonitorConfig:
+    """Configure the online monitoring loop.
+
+    ``gamma`` parameterizes the threshold adaptation used when violations are
+    detected. (Paper: Eq. 11)
+
+    Attributes:
+        max_iterations (int): Maximum number of online repair/monitoring rounds.
+        gamma (float): Threshold update smoothing/decay factor passed to
+            ``update_threshold_theorem2``.
+        protected_key (str): Fallback protected attribute column name to use
+            when ``group_cols`` is not provided to ``FACTEROnlineMonitor.run``.
+    """
+
     max_iterations: int = 5
     gamma: float = 0.95
     protected_key: str = "gender"
@@ -25,6 +53,32 @@ class OnlineMonitorConfig:
 
 @dataclass
 class OnlineIterationLog:
+    """Store summary statistics and diagnostics for one online iteration.
+
+    This is produced once per iteration of ``FACTEROnlineMonitor.run``.
+
+    Attributes:
+        iteration (int): 1-indexed iteration number.
+        q_alpha_start (float): Threshold at the start of the iteration.
+        q_alpha_end (float): Threshold at the end of the iteration.
+        q_trace (List[float]): Threshold values after each in-iteration update.
+        q_update_steps (List[int]): Row indices in the iteration where the
+            threshold was updated.
+        violations (int): Count of raw violations under the dynamic threshold
+            (``S > Q_t`` at the time each sample is processed).
+        violations_at_Q0 (int): Count of raw violations under the fixed initial
+            threshold ``Q0``.
+        violations_corr_dynamic (int): Count of "corrected" violations under the
+            dynamic threshold plus a FIFO-based correction term.
+        violations_corr_at_Q0 (int): Count of "corrected" violations under the
+            fixed threshold plus a FIFO-based correction term.
+        mean_S (float): Mean of per-row fairness scores ``S`` for the iteration.
+        mean_d (float): Mean of per-row predictive error term ``d`` for the
+            iteration.
+        mean_delta (float): Mean of per-row fairness penalty term ``delta`` for
+            the iteration.
+    """
+
     iteration: int
     q_alpha_start: float
     q_alpha_end: float
@@ -40,6 +94,24 @@ class OnlineIterationLog:
 
 
 class FACTEROnlineMonitor:
+    """Run the online monitoring and prompt-repair loop.
+
+    The monitor repeatedly:
+    1) builds an iteration-specific system prompt via ``PromptRepairEngine``,
+    2) obtains a recommendation via a ranker or generator,
+    3) computes a fairness-aware score using ``OnlineScorer``,
+    4) records violations and updates the threshold when violations occur.
+
+    This matches the paper's online calibration description: violation detection
+    triggers prompt updates and threshold adaptation.
+    (Paper: Sec. 3.3 / Eq. 10 / Eq. 11 / Alg. 1)
+
+    Note:
+        This class does not itself implement the scoring function; it delegates
+        to ``OnlineScorer`` and uses ``update_threshold_theorem2`` to update the
+        threshold.
+    """
+
     def __init__(
         self,
         ranker: Ranker,
@@ -47,6 +119,16 @@ class FACTEROnlineMonitor:
         repair: PromptRepairEngine,
         cfg: OnlineMonitorConfig,
     ):
+        """Initialize the online monitor.
+
+        Args:
+            ranker (Ranker): Ranker used when ``predict_mode='rank'``.
+            scorer (OnlineScorer): Scorer used to compute ``(S, d, delta)`` for a
+                single row.
+            repair (PromptRepairEngine): Prompt repair engine used to build
+                system prompts and store violations.
+            cfg (OnlineMonitorConfig): Online monitoring configuration.
+        """
         self.ranker = ranker
         self.scorer = scorer
         self.repair = repair
@@ -67,6 +149,51 @@ class FACTEROnlineMonitor:
         group_cols: Optional[Tuple[str, ...]] = None,
         min_sim: float = 0.65,
     ) -> Tuple[pd.DataFrame, list[OnlineIterationLog]]:
+        """Execute the iterative online monitoring loop.
+
+        This is the online phase that (a) generates outputs under a
+        fairness-instruction prompt, (b) computes a fairness-aware score, and
+        (c) updates the prompt/threshold on violations.
+        (Paper: Sec. 3.3 / Eq. 9 / Eq. 10 / Eq. 11 / Alg. 1)
+
+        The returned DataFrame is a copy of ``test_df`` augmented with per-row
+        predictions, prompts, scores, thresholds, and violation indicators for
+        each iteration.
+
+        Args:
+            test_df (pd.DataFrame): Test split input.
+            item_db (Dict[int, Dict[str, str]]): Item metadata mapping passed to
+                prediction and scoring utilities.
+            cal_artifacts (CalibrationArtifacts): Offline calibration artifacts
+                used by ``OnlineScorer``.
+            q_alpha0 (float): Initial threshold used to initialize the dynamic
+                threshold ``q`` and the fixed baseline ``q0``.
+            progress (bool): Whether to display a tqdm progress bar.
+            predict_mode (str): Prediction mode. When ``'rank'``, uses
+                ``predict_single_rank``; otherwise uses ``predict_single_open``.
+            generator (Optional[Generator]): Generator required for
+                ``predict_mode='open'``.
+            prompt_cfg (Optional[PromptConfig]): Prompt configuration required
+                for ``predict_mode='open'``.
+            title_to_mid (Optional[Dict[str, int]]): Title-to-item-id map used in
+                open generation.
+            catalogue_mapper (Optional[Any]): Catalogue mapper passed through to
+                ``predict_single_open``.
+            group_cols (Optional[Tuple[str, ...]]): Protected attribute columns
+                used to form group keys. If not provided, falls back to
+                ``cfg.protected_key``.
+            min_sim (float): Similarity threshold passed through to
+                ``predict_single_open``.
+
+        Returns:
+            Tuple[pd.DataFrame, list[OnlineIterationLog]]: A tuple of
+            ``(df, logs)`` where ``df`` is the augmented DataFrame and ``logs``
+            contains per-iteration summary diagnostics.
+
+        Raises:
+            ValueError: If ``predict_mode`` is ``'open'`` and ``generator`` or
+                ``prompt_cfg`` is not provided.
+    """
 
         q = float(q_alpha0)   # dynamic Q carried across iterations
         q0 = float(q_alpha0)  # fixed baseline Q0 for counterfactual counting
