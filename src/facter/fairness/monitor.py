@@ -1,20 +1,21 @@
 """Implement the FACTER online monitoring loop.
 
-This module defines the online phase used to iteratively evaluate model outputs
-for fairness violations, update a violation buffer, and adapt a threshold over
-multiple iterations.
+This module implements the repository's online phase: for each test example it
+builds an iteration-specific system prompt, produces a recommendation, scores
+it, and updates state when a score exceeds the current threshold.
 
 The implementation records per-iteration diagnostics (scores, thresholds, and
-violation counts) and returns an augmented DataFrame plus a list of iteration
-logs.
+violation counts) and returns an augmented ``DataFrame`` plus a list of
+per-iteration logs.
 
-The overall control flow corresponds to the paper's online calibration phase,
-including violation-triggered prompt updates and threshold adaptation.
-(Paper: Sec. 3.3 / Eq. 10 / Alg. 1)
+Paper context:
+    The overall control-flow (monitoring + violation-triggered prompt repair +
+    threshold adaptation) matches the high-level online loop described in the
+    paper. (Paper: Sec. 3.3 / Alg. 1)
 
-TODO(doc): This implementation treats the repository's threshold update helper
-as canonical; avoid assuming the paper's threshold-update equation matches the
-code line-by-line.
+TODO(doc): Clarify the exact correspondence between the paper's update rule and
+the repository's threshold update helper; treat the implementation as
+canonical.
 """
 
 from dataclasses import dataclass
@@ -42,9 +43,9 @@ class OnlineMonitorConfig:
     ``gamma`` parameterizes the threshold adaptation used when violations are
     detected.
 
-    Paper alignment:
-        The paper describes a violation-triggered threshold adaptation mechanism
-        in the online phase. (Paper: Sec. 3.3)
+    Paper context:
+        The paper describes an online phase where violations drive updates.
+        (Paper: Sec. 3.3)
 
     Attributes:
         max_iterations (int): Maximum number of online repair/monitoring rounds.
@@ -110,9 +111,10 @@ class FACTEROnlineMonitor:
     3) computes a fairness-aware score using ``OnlineScorer``,
     4) records violations and updates the threshold when violations occur.
 
-    This follows the paper's online calibration description at a high level:
-    violation detection triggers prompt updates and threshold adaptation.
-    (Paper: Sec. 3.3 / Eq. 10 / Alg. 1)
+    Paper context:
+        This follows the paper's online loop at a high level: violation
+        detection triggers prompt updates and threshold adaptation.
+        (Paper: Sec. 3.3 / Alg. 1)
 
     Note:
         This class does not itself implement the scoring function; it delegates
@@ -162,7 +164,10 @@ class FACTEROnlineMonitor:
         This is the online phase that (a) generates outputs under a
         fairness-instruction prompt, (b) computes a fairness-aware score, and
         (c) updates the prompt/threshold on violations.
-    (Paper: Sec. 3.3 / Eq. 9 / Eq. 10 / Alg. 1)
+
+        Paper context:
+            The online loop structure and "violation \u2192 update" pattern are
+            described in the paper. (Paper: Sec. 3.3 / Alg. 1)
 
         The returned DataFrame is a copy of ``test_df`` augmented with per-row
         predictions, prompts, scores, thresholds, and violation indicators for
@@ -201,7 +206,7 @@ class FACTEROnlineMonitor:
         Raises:
             ValueError: If ``predict_mode`` is ``'open'`` and ``generator`` or
                 ``prompt_cfg`` is not provided.
-    """
+        """
 
         q = float(q_alpha0)   # dynamic Q carried across iterations
         q0 = float(q_alpha0)  # fixed baseline Q0 for counterfactual counting
