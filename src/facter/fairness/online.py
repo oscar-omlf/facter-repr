@@ -1,7 +1,7 @@
 """Compute fairness-aware online scores for new predictions.
 
 This module defines a small scoring utility that computes an online
-fairness-aware score $S_{\mathrm{new}}$ by combining an optional predictive-error
+fairness-aware score $S_{\\mathrm{new}}$ by combining an optional predictive-error
 term $d_{\mathrm{new}}$ with a cross-group disparity term $\\Delta_{\\mathrm{new}}$.
 
 The implementation follows the same decomposition used in the method description
@@ -66,13 +66,14 @@ class OnlineScorer:
     """Score individual examples against calibration artifacts in the online phase.
 
     The score returned by :meth:`score_one` is:
+  
+    $$
+    S_{\\mathrm{new}} = d_{\\mathrm{new}} + \\lambda\,\Delta_{\\mathrm{new}},
+    $$
 
-    $$
-    S_{\mathrm{new}} = d_{\mathrm{new}} + \lambda\,\Delta_{\mathrm{new}},
-    $$
 
     where $\\Delta_{\\mathrm{new}}$ is computed from cross-group neighbors selected
-    in context-embedding space and $d_{\mathrm{new}}$ is optional (only computed
+    in context-embedding space and $d_{\\mathrm{new}}$ is optional (only computed
     when a target item is provided).
     """
 
@@ -108,11 +109,11 @@ class OnlineScorer:
 
         This method selects cross-group neighbors from the calibration set using
         cosine similarity in the context-embedding space, then computes a
-        disparity term $\Delta_{\mathrm{new}}$ based on distances between the
+        disparity term $\\Delta_{\\mathrm{new}}$ based on distances between the
         current prediction embedding and neighbor prediction embeddings.
 
         If a ``target_mid`` is provided, it also computes a predictive-error term
-    $d_{\mathrm{new}}$ as $1-\\cos(\\mathrm{pred}, \\mathrm{ref})$.
+        $d_{\\mathrm{new}}$ as $1-\\cos(\\mathrm{pred}, \\mathrm{ref})$.
 
         (Paper: Sec. 3.3 / Eq. 9)
 

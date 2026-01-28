@@ -14,7 +14,7 @@ Paper alignment:
 
 TODO(doc): The exact threshold-update equation in the paper is not treated as
 canonical here because the paper's narrative and equation statement may be
-inconsistent; keep the implementation as the source of truth.
+inconsistent.
 """
 
 from dataclasses import dataclass

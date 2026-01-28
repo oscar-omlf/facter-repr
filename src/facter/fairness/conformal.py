@@ -1,7 +1,7 @@
 """Compute conformal quantile thresholds from nonconformity scores.
 
 This module implements a simple conformal quantile rule used to convert a set of
-calibration nonconformity scores into a scalar threshold $Q_\alpha(0)$.
+calibration nonconformity scores into a scalar threshold $Q_\\alpha(0)$.
 
 The quantile computation in :func:`conformal_quantile` follows the order
 statistic form described in the paper for the offline calibration threshold

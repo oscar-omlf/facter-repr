@@ -509,7 +509,7 @@ def build_candidate_sets(
 
         allowed = pool[~np.isin(pool, np.array(list(banned), dtype=np.int64))]
         if len(allowed) == 0:
-            # pathological fallback: allow sampling from pool excluding history only
+            # fallback: allow sampling from pool excluding history only
             allowed = pool[~np.isin(pool, np.array(list(hist_set), dtype=np.int64))]
 
         if len(allowed) == 0:

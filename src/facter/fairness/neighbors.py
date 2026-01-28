@@ -61,10 +61,6 @@ class CrossGroupNeighborIndex:
     $\\lVert x_i - x_j \\rVert_2^2 = 2 - 2\\cos(x_i, x_j)$.
 
     (Paper: Sec. 3.2 / Eq. 4)
-
-    TODO(doc): The paper defines the locality condition using the original
-    context vectors $x_i$; this implementation applies it to the encoded context
-    embeddings passed to :meth:`fit`.
     """
 
     def __init__(self, cfg: NeighborConfig):

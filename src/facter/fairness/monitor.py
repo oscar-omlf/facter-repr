@@ -166,7 +166,7 @@ class FACTEROnlineMonitor:
         (c) updates the prompt/threshold on violations.
 
         Paper context:
-            The online loop structure and "violation \u2192 update" pattern are
+            The online loop structure and "violation -> update" pattern are
             described in the paper. (Paper: Sec. 3.3 / Alg. 1)
 
         The returned DataFrame is a copy of ``test_df`` augmented with per-row

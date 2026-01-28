@@ -71,10 +71,6 @@ def run_zero_shot(
     where $n$ is ``len(df)`` and $C$ is the count of buffered prior violations
     whose protected-group key matches the current row.
 
-    TODO(doc): Clarify how this baseline's "adjusted threshold" is intended to
-    relate to the paper's thresholding mechanism; the implementation here is
-    treated as canonical.
-
     Args:
         df (pd.DataFrame): Input examples.
         ranker (Optional[Ranker]): Ranker used when ``predict_mode == 'rank'``.

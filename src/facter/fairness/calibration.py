@@ -94,7 +94,7 @@ class OfflineCalibrator:
 
     Paper alignment:
         - Fairness-aware nonconformity scoring (Paper: Sec. 3.2 / Eq. 5)
-        - Conformal quantile threshold $Q_\alpha(0)$ (Paper: Sec. 3.2 / Eq. 6)
+        - Conformal quantile threshold $Q_\\alpha(0)$ (Paper: Sec. 3.2 / Eq. 6)
 
     TODO(doc): The module uses a neighbor index built from encoded contexts;
     link to the precise paper definition if the codebase's neighborhood

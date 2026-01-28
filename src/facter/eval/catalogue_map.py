@@ -15,8 +15,6 @@ similarity can be computed via a dot product.
 Paper context:
     The repository uses embedding-based mapping to convert generated text back
     into catalogue items for evaluation in open-generation settings.
-    TODO(doc): Add a paper citation if/when you identify the specific section
-    describing this mapping/evaluation step.
 """
 from __future__ import annotations
 
@@ -113,9 +111,6 @@ class CatalogueMapper:
     - :meth:`map_one` for mapping a single predicted title, and
     - :meth:`map_list` for mapping the first ``k`` positions of a predicted
       title list and computing ``valid_at_k``.
-
-    TODO(doc): Clarify the expected embedder protocol (methods, return shapes)
-    and where it is defined in the codebase.
 
     Attributes:
         embedder: Text embedder used to encode titles.
