@@ -4,9 +4,17 @@ This module contains a small helper used by the online monitoring loop to adjust
 the current conformal threshold $Q_\alpha(t)$ when a new fairness score exceeds
 it.
 
-The update rule implemented in :func:`update_threshold_theorem2` matches the
-main-paper threshold adaptation step (Paper: Eq. 11) and the convergence analysis
-in the appendix (Paper: Thm A.2).
+The update rule implemented in :func:`update_threshold_theorem2` is the
+threshold-adaptation mechanism used by this codebase's online monitoring loop.
+
+Paper alignment:
+    The paper discusses violation-triggered threshold adaptation in the online
+    phase and provides additional convergence analysis in the appendix.
+    (Paper: Sec. 3.3 / Thm A.2)
+
+TODO(doc): The exact threshold-update equation in the paper is not treated as
+canonical here because the paper's narrative and equation statement may be
+inconsistent; keep the implementation as the source of truth.
 """
 
 from dataclasses import dataclass
@@ -30,7 +38,12 @@ def update_threshold_theorem2(q_t: float, s_t: float, gamma: float) -> float:
     This function applies a piecewise update that only changes the threshold when
     the new fairness score exceeds it.
 
-    (Paper: Eq. 11 / Thm A.2)
+    Paper alignment:
+        This helper implements the violation-triggered threshold adaptation used
+        in the online phase. (Paper: Sec. 3.3)
+
+        The appendix provides a convergence discussion for a related piecewise
+        update. (Paper: Thm A.2)
 
     Args:
         q_t (float): Current threshold value $q_t$.

@@ -7,7 +7,7 @@ The implementation currently encodes only the contents of the ``history_titles``
 field and does not incorporate demographic columns.
 
 In the paper's notation, this corresponds to constructing a context embedding
-$e_x = \mathrm{Enc}(x)$ as part of offline preprocessing. (Paper: Sec. 3.2 / Stage A)
+$e_x = \\mathrm{Enc}(x)$ as part of offline preprocessing. (Paper: Sec. 3.2 / Stage A)
 """
 
 from dataclasses import dataclass
@@ -27,7 +27,7 @@ class ContextEncodingConfig:
     the text passed to the embedder.
 
     The paper describes encoding a user context $x$ into an embedding via
-    $\mathrm{Enc}(x)$. This config controls one specific implementation detail of
+    $\\mathrm{Enc}(x)$. This config controls one specific implementation detail of
     that step: how much interaction history is included. (Paper: Sec. 3.2 / Stage A)
 
     TODO(doc): clarify whether "most recent" ordering is always guaranteed by

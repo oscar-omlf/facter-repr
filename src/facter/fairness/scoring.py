@@ -101,8 +101,8 @@ class NonconformityScorer:
 
         It returns the full score $S$ alongside its components:
 
-        - $d$: predictive error computed as $1-\cos(\mathrm{pred},\mathrm{ref})$.
-        - $\Delta$: maximum L2 distance between the current prediction embedding
+                - $d$: predictive error computed as $1-\\cos(\\mathrm{pred},\\mathrm{ref})$.
+                - $\\Delta$: maximum L2 distance between the current prediction embedding
           and embeddings of cross-group neighbors.
 
         (Paper: Sec. 3.2 / Eq. 5)
@@ -159,7 +159,7 @@ class NonconformityScorer:
         cos_pr = np.sum(pred_emb * ref_emb, axis=1)
         d = (1.0 - cos_pr).astype(np.float32)
 
-        # \Delta_i = max_{j: W_ij > τρ} ||pred_i - pred_j||_2
+    # \\Delta_i = max_{j: W_ij > τρ} ||pred_i - pred_j||_2
         n = len(df)
         delta = np.zeros(n, dtype=np.float32)
         for i in range(n):

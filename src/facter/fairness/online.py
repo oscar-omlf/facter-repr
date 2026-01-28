@@ -2,7 +2,7 @@
 
 This module defines a small scoring utility that computes an online
 fairness-aware score $S_{\mathrm{new}}$ by combining an optional predictive-error
-term $d_{\mathrm{new}}$ with a cross-group disparity term $\Delta_{\mathrm{new}}$.
+term $d_{\mathrm{new}}$ with a cross-group disparity term $\\Delta_{\\mathrm{new}}$.
 
 The implementation follows the same decomposition used in the method description
 for online evaluation (Paper: Sec. 3.3 / Eq. 9), but operational details (e.g.
@@ -36,7 +36,7 @@ class OnlineScoringConfig:
         tau_x_l2 (float | None): Optional locality constraint in L2 distance in
             the (normalized) context-embedding space.
         lambda_fairness (float): Weight applied to the disparity term
-            $\Delta_{\mathrm{new}}$.
+            $\\Delta_{\\mathrm{new}}$.
     """
 
     protected_cols: Tuple[str, ...] = ("gender",)
@@ -57,8 +57,8 @@ class CalibrationArtifacts:
     """
 
     cal_df: pd.DataFrame            # must include protected cols
-    cal_context_emb: np.ndarray     # [N, D], normalized
-    cal_pred_emb: np.ndarray        # [N, D], normalized  (fix comment)
+    cal_context_emb: np.ndarray     # [N, D]; treated as cosine-ready (typically normalized)
+    cal_pred_emb: np.ndarray        # [N, D]; treated as cosine-ready (typically normalized)
     q_alpha0: float
 
 
@@ -71,7 +71,7 @@ class OnlineScorer:
     S_{\mathrm{new}} = d_{\mathrm{new}} + \lambda\,\Delta_{\mathrm{new}},
     $$
 
-    where $\Delta_{\mathrm{new}}$ is computed from cross-group neighbors selected
+    where $\\Delta_{\\mathrm{new}}$ is computed from cross-group neighbors selected
     in context-embedding space and $d_{\mathrm{new}}$ is optional (only computed
     when a target item is provided).
     """
@@ -84,8 +84,8 @@ class OnlineScorer:
                 text.
             item_embedder (ItemEmbedder): Item embedder used when scoring from
                 item ids.
-            context_encoder (ContextEncoder): Encoder that produces normalized
-                context embeddings from input rows.
+            context_encoder (ContextEncoder): Encoder that produces context
+                embeddings from input rows.
             cfg (OnlineScoringConfig): Configuration controlling neighbor
                 selection and score weighting.
         """
@@ -112,7 +112,7 @@ class OnlineScorer:
         current prediction embedding and neighbor prediction embeddings.
 
         If a ``target_mid`` is provided, it also computes a predictive-error term
-        $d_{\mathrm{new}}$ as $1-\cos(\mathrm{pred}, \mathrm{ref})$.
+    $d_{\mathrm{new}}$ as $1-\\cos(\\mathrm{pred}, \\mathrm{ref})$.
 
         (Paper: Sec. 3.3 / Eq. 9)
 

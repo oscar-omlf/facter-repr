@@ -3,10 +3,10 @@
 This module constructs an index of cross-group neighbors for each calibration
 example, based on cosine similarity between context embeddings. The resulting
 neighbor sets are used downstream when computing disparity penalties such as
-$\Delta_i$ / $\Delta_{\mathrm{new}}$.
+$\\Delta_i$ / $\\Delta_{\\mathrm{new}}$.
 
-Where applicable, the implementation mirrors the paper's similarity-matrix
-construction for cross-group comparisons (Paper: Sec. 3.2 / Eq. 4).
+Where applicable, the implementation is inspired by the paper's similarity-matrix
+construction for cross-group comparisons. (Paper: Sec. 3.2 / Eq. 4)
 """
 
 from dataclasses import dataclass
@@ -36,7 +36,7 @@ class NeighborConfig:
         protected_cols (Tuple[str, ...]): Columns whose values define the
             protected-attribute tuple used for grouping.
         tau_rho (float): Cosine-similarity threshold used to decide whether a
-            stored neighbor is eligible for the $\Delta$ computation.
+            stored neighbor is eligible for the $\\Delta$ computation.
         tau_x_l2 (float | None): Optional locality constraint in L2 distance in
             the (normalized) context-embedding space.
         top_k (int | None): Optional cap on the number of stored cross-group
@@ -44,7 +44,7 @@ class NeighborConfig:
     """
 
     protected_cols: Tuple[str, ...] = ("gender", "age", "occupation")
-    tau_rho: float = 0.90  # neighbor eligibility gate for \Delta_i and N(z_new)
+    tau_rho: float = 0.90  # neighbor eligibility gate for \\Delta_i and N(z_new)
     tau_x_l2: float | None = None  # optional locality constraint on context embeddings
     top_k: int | None = None  # optionally store only top-k cross-group neighbors per point
 
@@ -58,7 +58,7 @@ class CrossGroupNeighborIndex:
 
     If a locality constraint is enabled via ``tau_x_l2``, it is applied in the
     *context embedding* space using the identity (for normalized vectors)
-    $\lVert x_i - x_j \rVert_2^2 = 2 - 2\cos(x_i, x_j)$.
+    $\\lVert x_i - x_j \\rVert_2^2 = 2 - 2\\cos(x_i, x_j)$.
 
     (Paper: Sec. 3.2 / Eq. 4)
 
@@ -172,7 +172,7 @@ class CrossGroupNeighborIndex:
         return self._sims[i]
 
     def eligible_neighbors_for_delta(self, i: int) -> np.ndarray:
-        """Return neighbors eligible for the $\Delta$ computation.
+        """Return neighbors eligible for the $\\Delta$ computation.
 
         This applies the ``tau_rho`` threshold to the stored similarities.
 

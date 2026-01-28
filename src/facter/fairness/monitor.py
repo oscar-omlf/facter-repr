@@ -10,7 +10,11 @@ logs.
 
 The overall control flow corresponds to the paper's online calibration phase,
 including violation-triggered prompt updates and threshold adaptation.
-(Paper: Sec. 3.3 / Eq. 10 / Eq. 11 / Alg. 1)
+(Paper: Sec. 3.3 / Eq. 10 / Alg. 1)
+
+TODO(doc): This implementation treats the repository's threshold update helper
+as canonical; avoid assuming the paper's threshold-update equation matches the
+code line-by-line.
 """
 
 from dataclasses import dataclass
@@ -36,7 +40,11 @@ class OnlineMonitorConfig:
     """Configure the online monitoring loop.
 
     ``gamma`` parameterizes the threshold adaptation used when violations are
-    detected. (Paper: Eq. 11)
+    detected.
+
+    Paper alignment:
+        The paper describes a violation-triggered threshold adaptation mechanism
+        in the online phase. (Paper: Sec. 3.3)
 
     Attributes:
         max_iterations (int): Maximum number of online repair/monitoring rounds.
@@ -102,9 +110,9 @@ class FACTEROnlineMonitor:
     3) computes a fairness-aware score using ``OnlineScorer``,
     4) records violations and updates the threshold when violations occur.
 
-    This matches the paper's online calibration description: violation detection
-    triggers prompt updates and threshold adaptation.
-    (Paper: Sec. 3.3 / Eq. 10 / Eq. 11 / Alg. 1)
+    This follows the paper's online calibration description at a high level:
+    violation detection triggers prompt updates and threshold adaptation.
+    (Paper: Sec. 3.3 / Eq. 10 / Alg. 1)
 
     Note:
         This class does not itself implement the scoring function; it delegates
@@ -154,7 +162,7 @@ class FACTEROnlineMonitor:
         This is the online phase that (a) generates outputs under a
         fairness-instruction prompt, (b) computes a fairness-aware score, and
         (c) updates the prompt/threshold on violations.
-        (Paper: Sec. 3.3 / Eq. 9 / Eq. 10 / Eq. 11 / Alg. 1)
+    (Paper: Sec. 3.3 / Eq. 9 / Eq. 10 / Alg. 1)
 
         The returned DataFrame is a copy of ``test_df`` augmented with per-row
         predictions, prompts, scores, thresholds, and violation indicators for
