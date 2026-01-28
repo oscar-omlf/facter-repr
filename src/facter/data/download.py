@@ -1,3 +1,10 @@
+"""Download and extract raw datasets used by FACTER experiments.
+
+This module provides helpers to fetch supported datasets, extract them under the
+repository's raw data directory, and write a small manifest file containing
+download metadata and hashes.
+"""
+
 import gzip
 import hashlib
 import json
@@ -16,6 +23,15 @@ from .paths import DOWNLOADS_DIR, RAW_DIR, ensure_dirs
 
 @dataclass(frozen=True)
 class DownloadSpec:
+    """Describe a downloadable dataset artifact.
+
+    Attributes:
+        name (str): Short identifier for the dataset/resource.
+        url (str): Source URL.
+        extracted_subdir (Optional[str]): For zip datasets, the directory name
+            created within the archive.
+    """
+
     name: str
     url: str
     # For zip datasets: the folder name created inside the zip (e.g., "ml-1m")
@@ -42,6 +58,14 @@ META_AMAZON_MOVIES_TV_5 = DownloadSpec(
 
 
 def sha256_file(path: Path) -> str:
+    """Compute the SHA-256 hash of a file.
+
+    Args:
+        path (Path): Path to a readable file.
+
+    Returns:
+        str: Hex-encoded SHA-256 digest.
+    """
     h = hashlib.sha256()
     with path.open("rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
@@ -50,7 +74,15 @@ def sha256_file(path: Path) -> str:
 
 
 def extract_gz(archive_path: Path, out_path: Path) -> None:
-    """Decompresses a .gz file to the specified out_path."""
+    """Decompress a gzip-compressed file.
+
+    Args:
+        archive_path (Path): Path to the input ``.gz`` file.
+        out_path (Path): Output file path to write the decompressed contents.
+
+    Returns:
+        None
+    """
 
     print(f"Extracting {archive_path.name} to {out_path.name}...")
 
@@ -60,6 +92,17 @@ def extract_gz(archive_path: Path, out_path: Path) -> None:
 
 
 def write_manifest(manifest_path: Path, payload: Dict) -> None:
+    """Write a JSON manifest to disk.
+
+    The parent directory of `manifest_path` is created if needed.
+
+    Args:
+        manifest_path (Path): Destination path for the manifest JSON.
+        payload (Dict): JSON-serializable manifest payload.
+
+    Returns:
+        None
+    """
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     with manifest_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, sort_keys=True)
@@ -68,6 +111,20 @@ def write_manifest(manifest_path: Path, payload: Dict) -> None:
 def download_file(
     url: str, out_path: Path, timeout: int = 60, verify: Optional[bool] = None
 ) -> None:
+    """Download a URL to a local path with a progress bar.
+
+    Args:
+        url (str): Source URL.
+        out_path (Path): Destination file path.
+        timeout (int): Request timeout in seconds.
+        verify (Optional[bool]): Passed through to `requests.get(verify=...)`.
+
+    Returns:
+        None
+
+    Raises:
+        requests.HTTPError: If the server responds with an error status code.
+    """
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with requests.get(url, stream=True, timeout=timeout, verify=verify) as r:
         r.raise_for_status()
@@ -78,10 +135,19 @@ def download_file(
 
 
 def download_movielens_1m(force: bool = False) -> Path:
-    """
-    Downloads and extracts MovieLens-1M into data/raw/ml-1m/.
-    Writes data/raw/ml-1m/manifest.json with URL + hashes.
-    Returns the extracted directory path.
+    """Download and extract MovieLens-1M under the raw data directory.
+
+    If the dataset appears to already be extracted (based on expected files) and
+    `force` is False, the existing directory is returned.
+
+    Args:
+        force (bool): Whether to re-download/re-extract even if files are present.
+
+    Returns:
+        Path: Path to the extracted dataset directory.
+
+    Raises:
+        RuntimeError: If the extracted directory or expected files are missing.
     """
     ensure_dirs()
     target_dir = RAW_DIR / "ml-1m"
@@ -122,11 +188,20 @@ def download_movielens_1m(force: bool = False) -> Path:
 
 
 def download_amazon_movies_tv_5(force: bool = False) -> Path:
-    """
-    Downloads Amazon Movies&TV 5-core & Metadata into DOWNLOADS_DIR.
-    Extracts them into data/raw/amazon/ as .json files.
-    Writes manifest with hashes of the EXTRACTED files.
-    Returns the directory path containing the gz.
+    """Download Amazon Movies&TV 5-core ratings and metadata under raw data.
+
+    The archives are downloaded to `DOWNLOADS_DIR` and decompressed to
+    `RAW_DIR / "amazon"` as ``.json`` files. A manifest is written containing
+    hashes of the extracted files and metadata about the downloaded archives.
+
+    If the extracted JSON files already exist and `force` is False, the existing
+    directory is returned.
+
+    Args:
+        force (bool): Whether to re-download/re-extract even if files are present.
+
+    Returns:
+        Path: Path to the extracted dataset directory.
     """
     ensure_dirs()
     target_dir = RAW_DIR / "amazon"
@@ -188,6 +263,16 @@ def download_amazon_movies_tv_5(force: bool = False) -> Path:
 
 
 def download_dataset(dataset: str = "ml-1m", force: bool = False) -> Path:
+    """Download a supported dataset by name.
+
+    Args:
+        dataset (str): Dataset identifier. Supported values in this module are
+            "ml-1m" and "amazon".
+        force (bool): Whether to re-download/re-extract even if files are present.
+
+    Returns:
+        Path: Path to the extracted dataset directory.
+    """
     if dataset == "ml-1m":
         target_dir = download_movielens_1m(force=force)
 
