@@ -14,8 +14,8 @@ FACTER is a post-hoc wrapper around a black-box LLM recommender that:
 
 This repo contains dataset builders and an end-to-end experiment runner for:
 
-- MovieLens-1M (`ml-1m`)
-- Amazon Movies & TV 5-core + metadata (`amazon`)
+- MovieLens-1M (`ml-1m`) (visit https://grouplens.org/datasets/movielens/1m/ for details)
+- Amazon Movies & TV 5-core + metadata (`amazon`) (visit https://jmcauley.ucsd.edu/data/amazon/ for details)
 
 ## What you can reproduce
 
