@@ -212,3 +212,4 @@ data/
 !src/facter/data/
 mlruns/
 mlflow.db
+mlflow_analysis_output/
