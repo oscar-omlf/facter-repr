@@ -776,7 +776,7 @@ def run_online_monitor(
         catalogue_mapper (CatalogueMapper): Catalogue mapper for open generation.
 
     Returns:
-        TODO(doc): clarify return type and semantics of ``monitor.run``.
+=        Online monitor instance.
     """
     return monitor.run(
         test_df=test_df,
@@ -941,9 +941,6 @@ def save_outputs(processed_dir: Path, args: argparse.Namespace, pset: str, out_d
 
 def compute_qstar_counterfactuals(out_df: pd.DataFrame, q_star: float, max_iterations: int) -> Dict[str, float]:
     """Compute fixed-threshold violation diagnostics from per-iteration scores.
-
-    TODO(doc): If this corresponds to a specific variant/ablation in the paper,
-    cite the relevant section; otherwise keep it as an internal diagnostic.
 
     This uses already-computed ``S_iter{t}`` columns and does not re-run any
     model inference or prompt repair. It only recomputes violation counts under

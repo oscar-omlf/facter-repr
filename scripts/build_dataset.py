@@ -4,8 +4,7 @@ This script downloads a supported raw dataset, constructs an item database and
 interaction protocol splits, attaches generation and ranking prompts, and writes
 JSONL files under the processed data directory.
 
-TODO(doc): link this script's dataset/protocol construction to the relevant paper
-section once identified.
+The supported datasets are: "ml-1m" and "amazon".
 """
 
 import argparse
