@@ -1,3 +1,15 @@
+"""Run the offline calibration phase for FACTER.
+
+This module implements the offline phase that:
+1) encodes user contexts,
+2) generates model predictions,
+3) computes fairness-aware nonconformity scores, and
+4) computes an initial conformal threshold ``q_alpha0``.
+
+The calibration flow corresponds to the paper's offline calibration phase.
+(Paper: Sec. 3.2 / Eq. 5 / Eq. 6)
+"""
+
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -19,6 +31,22 @@ from facter.fairness.conformal import conformal_quantile
 
 @dataclass(frozen=True)
 class OfflineCalibConfig:
+    """Configure the offline calibration phase.
+
+    Attributes:
+        alpha (float): Miscoverage level used for the conformal quantile.
+        lambda_fairness (float): Fairness penalty weight passed to the scoring
+            configuration.
+        tau_rho (float): Context-similarity threshold used by the neighbor index
+            and scoring.
+        tau_x_l2 (float | None): Optional L2 radius used when constructing the
+            neighborhood (see ``NeighborConfig``).
+        protected_cols (Tuple[str, ...]): Protected attribute columns used to
+            define cross-group neighborhoods.
+        top_k_neighbors (int | None): Optional top-k storage for neighbor
+            relationships.
+    """
+
     alpha: float = 0.10
     lambda_fairness: float = 0.7
     tau_rho: float = 0.90
@@ -29,6 +57,24 @@ class OfflineCalibConfig:
 
 @dataclass(frozen=True)
 class OfflineCalibrationResult:
+    """Collect artifacts and outputs from offline calibration.
+
+    Attributes:
+        cal_df (pd.DataFrame): Calibration DataFrame augmented with predictions
+            and metadata.
+        cal_context_emb (np.ndarray): Context embeddings computed from
+            ``cal_df``.
+        cal_pred_mid (np.ndarray): Predicted item IDs.
+        cal_pred_text (list[str]): Predicted output text used for embedding.
+        cal_pred_emb (np.ndarray): Embeddings of predicted outputs.
+        scores_S (np.ndarray): Nonconformity scores.
+        scores_d (np.ndarray): Predictive error component produced by the
+            scorer.
+        scores_delta (np.ndarray): Fairness penalty component produced by the
+            scorer.
+        q_alpha0 (float): Initial conformal threshold computed from ``scores_S``.
+    """
+
     cal_df: pd.DataFrame
     cal_context_emb: np.ndarray
     cal_pred_mid: np.ndarray
@@ -41,11 +87,18 @@ class OfflineCalibrationResult:
 
 
 class OfflineCalibrator:
-    """
-    Implements Offline calibration phase (Sec. 3.2):
-      - Enc(x) + W (Eq.4)
-      - score S_i (Eq.5)
-      - conformal quantile Q_alpha^(0) (Eq.6)
+    """Run offline calibration to compute the initial conformal threshold.
+
+    This class orchestrates context encoding, prediction, neighborhood
+    construction, scoring, and conformal quantile computation.
+
+    Paper alignment:
+        - Fairness-aware nonconformity scoring (Paper: Sec. 3.2 / Eq. 5)
+        - Conformal quantile threshold $Q_\alpha(0)$ (Paper: Sec. 3.2 / Eq. 6)
+
+    TODO(doc): The module uses a neighbor index built from encoded contexts;
+    link to the precise paper definition if the codebase's neighborhood
+    construction exactly matches Eq. 4.
     """
 
     def __init__(
@@ -55,6 +108,16 @@ class OfflineCalibrator:
         context_encoder: ContextEncoder,
         cfg: OfflineCalibConfig,
     ):
+        """Initialize the offline calibrator.
+
+        Args:
+            ranker (Ranker): Ranker used when ``predict_mode='rank'``.
+            embedder (TextEmbedder): Embedder used by the
+                ``NonconformityScorer``.
+            context_encoder (ContextEncoder): Encoder used to embed user
+                contexts.
+            cfg (OfflineCalibConfig): Offline calibration configuration.
+        """
         self.ranker = ranker
         self.embedder = embedder
         self.context_encoder = context_encoder
@@ -72,20 +135,38 @@ class OfflineCalibrator:
         catalogue_mapper: Optional[CatalogueMapper] = None,
         min_sim: float = 0.65,
     ) -> OfflineCalibrationResult:
-        """
-        Offline calibration supporting rank-mode and open-generation mode.
+        """Run offline calibration supporting rank and open-generation modes.
 
-        Rank-mode:
-        - Use ranker to select top-1 mid from candidate set.
-        - pred_text is item_text(pred_mid).
+        This method:
+        1) encodes contexts,
+        2) generates predictions via the prediction utilities,
+        3) fits a cross-group neighbor index, and
+        4) computes nonconformity scores and the conformal quantile.
 
-        Open-mode:
-        - Use generator to produce top-k titles.
-        - Map top-1 title to mid if possible (optional).
-        - pred_text is item_text(mapped_mid) if mapped else raw title.
+        Args:
+            cal_df (pd.DataFrame): Calibration split input.
+            item_db (Dict[int, Dict[str, str]]): Item metadata mapping.
+            system_prompt (Optional[str]): Optional system prompt passed through
+                to prediction.
+            progress (bool): Whether to display a tqdm progress bar.
+            predict_mode (str): Prediction mode ("rank" or "open").
+            generator (Optional[Generator]): Generator required when
+                ``predict_mode='open'``.
+            prompt_cfg (Optional[PromptConfig]): Prompt configuration required
+                when ``predict_mode='open'``.
+            catalogue_mapper (Optional[CatalogueMapper]): Catalogue mapper
+                passed through to open prediction.
+            min_sim (float): Similarity threshold passed through to open
+                prediction.
 
-        Returns OfflineCalibrationResult with cal_pred_emb computed from pred_text,
-        so online scoring uses the same output embedding space.
+        Returns:
+            OfflineCalibrationResult: Calibration outputs and artifacts.
+
+        Raises:
+            ValueError: If ``predict_mode`` is ``'open'`` and ``generator`` or
+                ``prompt_cfg`` is not provided.
+            ValueError: If ``predict_mode`` is not one of ``'rank'`` or
+                ``'open'``.
         """
         df = cal_df.reset_index(drop=True).copy()
         df["group_attrs"] = df[list(self.cfg.protected_cols)].astype(str).agg("_".join, axis=1)
