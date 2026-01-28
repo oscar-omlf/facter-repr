@@ -1,3 +1,10 @@
+"""Provide cached text embedding utilities.
+
+This module wraps :class:`sentence_transformers.SentenceTransformer` to produce
+text embeddings and caches them on disk (batched into ``.npz`` files) with an
+optional in-memory LRU cache.
+"""
+
 import hashlib
 import pickle
 from collections import OrderedDict
@@ -12,11 +19,34 @@ from tqdm import tqdm
 
 
 def _sha256_text(s: str) -> str:
+    """Compute a shortened SHA-256 hash for a text string.
+
+    Args:
+        s (str): Input text.
+
+    Returns:
+        str: First 16 hex characters of the SHA-256 digest.
+    """
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]  # Shorter hash for efficiency
 
 
 @dataclass(frozen=True)
 class EmbedderConfig:
+    """Configure :class:`TextEmbedder`.
+
+    Attributes:
+        model_name (str): SentenceTransformer model identifier.
+        device (str): Target device passed to SentenceTransformer.
+        batch_size (int): Batch size used for encoding uncached texts.
+        normalize (bool): Whether to request normalized embeddings from the
+            underlying encoder.
+        cache_dir (Path): Directory holding cache files and manifest.
+        progress (bool): TODO(doc): clarify whether/where this flag is used.
+        embeddings_per_file (int): Number of embeddings to store in each
+            compressed batch file.
+        max_memory_cache (int): Maximum number of embeddings retained in the
+            in-memory LRU cache.
+    """
     model_name: str = "paraphrase-mpnet-base-v2"
     device: str = "cuda"  # "cuda" | "cpu"
     batch_size: int = 512
@@ -28,16 +58,24 @@ class EmbedderConfig:
 
 
 class TextEmbedder:
-    """
-    SentenceTransformer wrapper with deterministic batching + disk cache.
-    Optimized for large datasets by batching embeddings into larger files.
+    """Embed text using SentenceTransformer with a batched on-disk cache.
 
-    API:
-      encode_texts(texts: list[str]) -> np.ndarray shape [N, D]
-      encode_text(text: str) -> np.ndarray shape [D]
+    This class keeps a manifest mapping hashed texts to positions within
+    compressed batch files stored in ``cfg.cache_dir``. It also maintains an
+    in-memory LRU cache of recently accessed embeddings.
+
+    Public API:
+        - :meth:`encode_texts` embeds a sequence of strings.
+        - :meth:`encode_text` embeds a single string.
+        - :meth:`flush` forces buffered embeddings to be persisted.
     """
 
     def __init__(self, cfg: EmbedderConfig):
+        """Initialize the embedder and load any existing cache manifest.
+
+        Args:
+            cfg (EmbedderConfig): Embedder configuration.
+        """
         self.cfg = cfg
         self.cfg.cache_dir.mkdir(parents=True, exist_ok=True)
         self.model = SentenceTransformer(cfg.model_name, device=cfg.device)
@@ -61,7 +99,7 @@ class TextEmbedder:
         self._current_batch_id = self._batch_counter
 
     def _save_manifest(self) -> None:
-        """Save manifest to disk using pickle for efficiency."""
+        """Persist the cache manifest to disk."""
         with self._manifest_path.open("wb") as f:
             pickle.dump({
                 "manifest": self._manifest,
@@ -69,7 +107,7 @@ class TextEmbedder:
             }, f, protocol=pickle.HIGHEST_PROTOCOL)
     
     def _flush_write_buffer(self) -> None:
-        """Write buffered embeddings to disk in batches."""
+        """Write buffered embeddings to disk and update the manifest."""
         if not self._write_buffer:
             return
         
@@ -93,7 +131,18 @@ class TextEmbedder:
         self._save_manifest()
     
     def _load_batch_file(self, batch_id: int) -> np.ndarray:
-        """Load a batch file containing multiple embeddings."""
+        """Load a cached embedding batch file.
+
+        Args:
+            batch_id (int): Batch id to load.
+
+        Returns:
+            np.ndarray: Array of embeddings stored in the batch file.
+
+        Raises:
+            FileNotFoundError: If the corresponding ``.npz`` batch file does
+                not exist.
+        """
         batch_file = self.cfg.cache_dir / f"batch_{batch_id}.npz"
         if not batch_file.exists():
             raise FileNotFoundError(f"Batch file {batch_file} not found")
@@ -101,12 +150,30 @@ class TextEmbedder:
         return data["embeddings"]
 
     def encode_text(self, text: str) -> np.ndarray:
+        """Embed a single text string.
+
+        Args:
+            text (str): Input text.
+
+        Returns:
+            np.ndarray: 1D embedding vector.
+        """
         return self.encode_texts([text])[0]
 
     def encode_texts(self, texts: Sequence[str]) -> np.ndarray:
-        """
-        Returns embeddings as float32 numpy array of shape [N, D].
-        Uses batched disk cache and memory cache for efficiency.
+        """Embed a sequence of texts, using cached values when available.
+
+        The function hashes each input string, attempts to resolve cached
+        embeddings (first from the in-memory LRU cache, then from batch files on
+        disk), and encodes any missing texts via the underlying
+        SentenceTransformer model. Newly encoded embeddings are buffered and
+        periodically written to disk.
+
+        Args:
+            texts (Sequence[str]): Input texts.
+
+        Returns:
+            np.ndarray: Float32 array of embeddings with shape ``(N, D)``.
         """
         keys = [_sha256_text(t) for t in texts]
 
@@ -184,10 +251,23 @@ class TextEmbedder:
         self._flush_write_buffer()
     
     def __enter__(self):
-        """Context manager entry."""
+        """Enter the context manager.
+
+        Returns:
+            TextEmbedder: This instance.
+        """
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit - flush remaining embeddings."""
+        """Exit the context manager and flush remaining embeddings.
+
+        Args:
+            exc_type: Exception type (if raised).
+            exc_val: Exception value (if raised).
+            exc_tb: Exception traceback (if raised).
+
+        Returns:
+            bool: Always False to avoid suppressing exceptions.
+        """
         self.flush()
         return False
