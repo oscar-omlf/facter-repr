@@ -4,8 +4,8 @@ This repository is an **independent reimplementation** and **reproducibility stu
 
 **FACTER: Fairness-Aware Conformal Thresholding and Prompt Engineering for Enabling Fair LLM-Based Recommender Systems**  
 Arya Fayyazi, Mehdi Kamal, Massoud Pedram (ICML 2025)  
-Paper (arXiv): https://arxiv.org/abs/2502.02966Arya  
-Code (Github): https://github.com/AryaFayyazi/FACTERPaper
+[Paper](https://openreview.net/pdf?id=edN2rEemj6) (OpenReview)  
+[Code](https://github.com/AryaFayyazi/FACTER) (Github)
 
 FACTER is a post-hoc wrapper around a black-box LLM recommender that:
 
@@ -164,6 +164,7 @@ python scripts/run_facter.py \
 
 This will:
 - run a Zero-Shot baseline (rank without fairness prompt repair),
+- run a Fair baseline (rank with static fairness prompt),
 - run offline conformal calibration to compute Q_alpha^(0),
 - run online iterations with violation-triggered prompt repair + threshold update,
 - log results to MLflow (default: `sqlite:///./mlflow.db`),
