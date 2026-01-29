@@ -8,6 +8,8 @@ version = "0.0.1"
 description = "Reproduction + extensions for FACTER"
 requires-python = ">=3.11"
 dependencies = []
+readme = "README.md"
+license = {text = "MIT"}
 
 [tool.setuptools]
 package-dir = {"" = "src"}
