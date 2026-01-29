@@ -98,7 +98,7 @@ python scripts/build_dataset.py \
   --relevance_window 10
 ```
 
-Amazon:
+Amazon Movies & TV:
 ```bash
 python scripts/build_dataset.py \
   --dataset amazon \
