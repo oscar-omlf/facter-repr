@@ -36,11 +36,13 @@ Exact metric parity with the reproduction paper may depend on model choice, comp
 │  ├─ prompting/               # Prompt repair
 │  └─ tracking/                # MLflow logging wrappers
 ├─ scripts/                    # CLI entrypoints
-│  ├─ download_data.py
-│  ├─ build_dataset.py
+│  ├─ download_data.py         # Download raw data
+│  ├─ build_dataset.py         # Build processed dataset
 │  ├─ run_facter.py            # Main experiment runner
-│  └─ results_analysis.ipynb   # Jupyter notebook to extract and analyze results
+│  ├─ mlflow_run_prune.ipynb   # Jupyter notebook to analyse and prune MLflow runs
+│  └─ results_analysis.ipynb   # Jupyter notebook to extract and analyse results
 ├─ data/                       # Raw/processed data + caches (created at runtime)
+├─ mlruns.zip                  # MLflow run archive (zip) to be used by scripts/results_analysis.ipynb
 └─ mlflow.db                   # Default MLflow store (SQLite)
 ```
 
