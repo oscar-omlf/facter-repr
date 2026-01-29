@@ -170,6 +170,8 @@ This will:
 - log results to MLflow (default: `sqlite:///./mlflow.db`),
 - save per-example tables under `data/processed/<dataset>/runs/*.parquet`.
 
+A comprehensive list of all commands used to run the experiments for this reproduction study can be found in `experiment-commands.md`.
+
 ### Hyperparameters (FACTER paper defaults):
 
 - `--tau_rho 0.90`
