@@ -38,10 +38,10 @@ Exact metric parity with the reproduction paper may depend on model choice, comp
 ├─ scripts/                    # CLI entrypoints
 │  ├─ download_data.py
 │  ├─ build_dataset.py
-│  └─ run_facter.py             # Main experiment runner
+│  ├─ run_facter.py            # Main experiment runner
+│  └─ results_analysis.ipynb   # Jupyter notebook to extract and analyze results
 ├─ data/                       # Raw/processed data + caches (created at runtime)
-├─ mlflow.db                   # Default MLflow store (SQLite)
-└─ results_analysis.ipynb       # Example analysis notebook
+└─ mlflow.db                   # Default MLflow store (SQLite)
 ```
 
 
