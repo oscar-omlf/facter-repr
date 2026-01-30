@@ -300,6 +300,8 @@ docker compose down
 ## Contributors
 - Oscar Miró López-Feliu ([@oscar-omlf](https://github.com/oscar-omlf))
 - Daimy van Loo ([@daimyvanloo](https://github.com/daimyvanloo))
+- Xanthos Kekkos ([@kambatzis](https://github.com/kambatzis))
+- Mikel Blom ([@mklblm](https://github.com/mklblm))
 
 
 ## License
