@@ -61,7 +61,7 @@ To verify you downloaded the real artifact:
 ```
 ls -lh mlruns.zip
 ```
-The file size should be approximately 150 MB
+The file size should be approximately 150 MB.
 
 ## Setup (conda)
 
