@@ -208,6 +208,13 @@ mlflow ui --backend-store-uri "sqlite:///./mlflow.db"
 
 Then open the MLflow UI and filter by experiment/run to view metrics and logged artifacts.
 
+## Results Analysis
+In order to analyse the results of your runs, follow the following steps:
+1. Place the `mlruns` folder (or `mlruns.zip `)  resulting from MLflow tracking in the `results` folder.
+2. Run the `mlflow_run_prune.ipynb` notebook. This notebook can be used to filter out failed or unwanted runs, adjust the variable in the notebook as necessary for your situation. This notebook will create a folder `mlrun_pruned` inside `results`.
+3. Run the `results_analysis.ipynb` notebook. This notebook will display all results needed to recreate the tables from the paper.
+
+
 ## Caching and performance notes
 - The HF ranker caches rankings in `data/cache/ranker/` keyed by (system_prompt, user_prompt, candidates).
 - The SentenceTransformer embedder caches embeddings in `data/cache/embeddings/`.
