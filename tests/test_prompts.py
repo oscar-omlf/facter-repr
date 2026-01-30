@@ -11,7 +11,7 @@ def test_generation_prompt_contains_demographics_and_history():
     cfg = PromptConfig(k_recs=10, include_demographics=True, domain="movie")
     p = build_open_prompt(row, cfg)
     assert "User demographics" in p
-    assert "History" in p
+    assert "Watch history" in p
     assert "Recommend the next 10 movies" in p
 
 
