@@ -46,6 +46,22 @@ Exact metric parity with the reproduction paper may depend on model choice, comp
 └─ mlflow.db                   # Default MLflow store (SQLite)
 ```
 
+## MLflow runs archive (Git LFS)
+
+`mlruns.zip` is stored using **Git LFS**. If you clone this repo without Git LFS, you will get a small pointer file instead of the real zip.
+
+After cloning, run:
+
+```bash
+git lfs install
+git lfs pull
+```
+
+To verify you downloaded the real artifact:
+```
+ls -lh mlruns.zip
+```
+The file size should be approximately 150 MB
 
 ## Setup (conda)
 
@@ -275,7 +291,7 @@ docker compose down
 ```
 
 
-## Contributions
+## Contributors
 - Oscar Miró López-Feliu ([@oscar-omlf](https://github.com/oscar-omlf))
 
 
