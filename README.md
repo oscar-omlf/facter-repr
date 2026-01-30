@@ -47,7 +47,7 @@ Exact metric parity with the reproduction paper may depend on model choice, comp
 
 ## MLflow runs archive (Git LFS)
 
-`mlruns.zip` is stored using **Git LFS**. If you clone this repo without Git LFS, you will get a small pointer file instead of the real zip.
+`mlruns.zip` is stored using **Git LFS**. If you clone this repo without Git LFS, you will get a small pointer file instead of the real zip. Please make sure that Git LFS is installed in your system.
 
 After cloning, run:
 
@@ -58,7 +58,7 @@ git lfs pull
 
 To verify you downloaded the real artifact:
 ```
-ls -lh mlruns.zip
+ls -lh results/mlruns.zip
 ```
 The file size should be approximately 150 MB.
 
