@@ -210,6 +210,5 @@ __marimo__/
 
 data/
 !src/facter/data/
-mlruns/
-mlflow.db
 mlflow_analysis_output/
+mlflow_prune_workspace/
