@@ -4,7 +4,7 @@ This repository is an **independent reimplementation** and **reproducibility stu
 
 **FACTER: Fairness-Aware Conformal Thresholding and Prompt Engineering for Enabling Fair LLM-Based Recommender Systems**  
 Arya Fayyazi, Mehdi Kamal, Massoud Pedram (ICML 2025)  
-[Paper](https://openreview.net/pdf?id=edN2rEemj6) (OpenReview)  
+[Paper](https://proceedings.mlr.press/v267/fayyazi25a.html) (PMLR / ICML 2025 Proceedings)    
 [Code](https://github.com/AryaFayyazi/FACTER) (GitHub)
 
 FACTER is a post-hoc wrapper around a black-box LLM recommender that:
@@ -24,7 +24,7 @@ Exact metric parity with the reproduction paper may depend on model choice, comp
 
 ## Repository structure
 
-*High-level map* (selected):
+*High-level map*::
 
 ```text
 .
@@ -42,7 +42,6 @@ Exact metric parity with the reproduction paper may depend on model choice, comp
 │  ├─ mlflow_run_prune.ipynb   # Jupyter notebook to analyse and prune MLflow runs
 │  └─ results_analysis.ipynb   # Jupyter notebook to extract and analyse results
 ├─ data/                       # Raw/processed data + caches (created at runtime)
-├─ mlruns.zip                  # MLflow run archive (zip) to be used by scripts/results_analysis.ipynb
 └─ mlflow.db                   # Default MLflow store (SQLite)
 ```
 
@@ -293,7 +292,6 @@ docker compose down
 
 ## Contributors
 - Oscar Miró López-Feliu ([@oscar-omlf](https://github.com/oscar-omlf))
-- Daimy van Loo ([@daimyvanloo](https://github.com/daimyvanloo))
 
 
 ## License
