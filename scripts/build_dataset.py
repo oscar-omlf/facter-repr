@@ -1,3 +1,12 @@
+"""Build and write processed protocol datasets with prompts.
+
+This script downloads a supported raw dataset, constructs an item database and
+interaction protocol splits, attaches generation and ranking prompts, and writes
+JSONL files under the processed data directory.
+
+The supported datasets are: "ml-1m" and "amazon".
+"""
+
 import argparse
 import json
 
@@ -18,6 +27,20 @@ from facter.data.protocol import (
 
 
 def main() -> None:
+    """Build calibration/test splits and write them to the processed data folder.
+
+    The script:
+
+    - Downloads the selected dataset if needed.
+    - Builds an item database.
+    - Samples interactions, splits into calibration/test, and creates candidate
+      sets.
+    - Builds prompts for open-ended generation and ranking.
+    - Writes JSONL files for each split plus a small metadata JSON.
+
+    Returns:
+        None
+    """
     p = argparse.ArgumentParser()
     p.add_argument("--dataset", type=str, default="ml-1m", choices=["ml-1m", "amazon"])
     p.add_argument("--seed", type=int, default=42)
@@ -85,6 +108,14 @@ def main() -> None:
     pcfg = PromptConfig(k_recs=10, include_demographics=True, domain=domain)
 
     def titles_from_mids(mids):
+        """Map item IDs from an interaction row to item titles.
+
+        Args:
+            mids: Iterable of item IDs used as keys into `item_db`.
+
+        Returns:
+            list[str]: Titles corresponding to the provided IDs.
+        """
         return [item_db[int(m)]["title"] for m in mids]
 
     for split_name, df in [("cal", cal), ("test", test)]:

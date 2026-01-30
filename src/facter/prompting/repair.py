@@ -1,3 +1,10 @@
+"""Mine prompt repair rules from a rolling buffer of threshold violations.
+
+This module implements a small in-memory buffer for storing "violation" events
+and an engine for deriving "Avoid" rules that can be injected into system
+prompts.
+"""
+
 from collections import Counter, deque
 from dataclasses import dataclass
 from typing import Deque, Dict, List, Optional, Tuple
@@ -6,6 +13,21 @@ from facter.data.prompts import AGE_ID2LABEL, OCC_ID2LABEL
 
 @dataclass(frozen=True)
 class PromptRepairConfig:
+    """Configure prompt-repair rule mining.
+
+    Attributes:
+        buffer_size (int): Maximum number of recent violations to retain.
+        protected_cols (Tuple[str, ...]): Protected attribute columns expected
+            in input attribute dictionaries.
+        keying (str): Rule keying strategy. Supported values are ``"tuple"``
+            (all protected columns must match) and ``"per_attr"`` (match each
+            protected column independently).
+        min_feature_count (int): Minimum count required for a feature (genre or
+            title) to be turned into an Avoid rule.
+        max_rules (int): Maximum number of rules to mine per key.
+        domain (str): Domain identifier used to select feature extraction
+            behavior. Supported values are ``"movielens"`` and ``"amazon"``.
+    """
     buffer_size: int = 50
     protected_cols: Tuple[str, ...] = ("gender",)  # which columns exist in df / prompts
     keying: str = "per_attr"  # "tuple" | "per_attr"
@@ -16,6 +38,15 @@ class PromptRepairConfig:
 
 @dataclass(frozen=True)
 class ViolationEntry:
+    """Represent a single observed violation.
+
+    Attributes:
+        attrs (Dict[str, str]): Protected attributes for the violated example.
+        pred_mid (int): Predicted item id if mapped; ``-1`` if not mapped.
+        pred_title (str): Predicted title. This may be a catalogue title when
+            mapped, or a raw generated string.
+        pred_genres (Tuple[str, ...]): Parsed genre strings, if available.
+    """
     attrs: Dict[str, str]          # full attrs for this violation (e.g., gender/age/occupation)
     pred_mid: int                  # -1 if unmapped (open mode)
     pred_title: str                # title (catalog title if mapped, else raw generation)
@@ -24,27 +55,62 @@ class ViolationEntry:
 
 class ViolationBuffer:
     def __init__(self, cfg: PromptRepairConfig):
+        """Initialize the rolling violation buffer.
+
+        Args:
+            cfg (PromptRepairConfig): Buffer configuration.
+        """
         self.cfg = cfg
         self._buf: Deque[ViolationEntry] = deque(maxlen=cfg.buffer_size)
 
     def add(self, entry: ViolationEntry) -> None:
+        """Append a new violation entry to the buffer.
+
+        Args:
+            entry (ViolationEntry): Violation event to store.
+        """
         self._buf.append(entry)
 
     def recent(self) -> List[ViolationEntry]:
+        """Return the most recent violations currently stored.
+
+        Returns:
+            List[ViolationEntry]: Violations in buffer order.
+        """
         return list(self._buf)
 
 
 class PromptRepairEngine:
+    """Store violations and mine "Avoid" rules for prompt injection.
+
+    The engine maintains a :class:`ViolationBuffer` and can derive simple rules
+    from frequent features seen in recent violations.
     """
-    Stores violations + mines Avoid rules.
-    """
+
     def __init__(self, cfg: PromptRepairConfig, item_db: Dict[int, Dict[str, str]]):
+        """Initialize the prompt repair engine.
+
+        Args:
+            cfg (PromptRepairConfig): Rule mining configuration.
+            item_db (Dict[int, Dict[str, str]]): Item metadata database. For
+                MovieLens-style data, entries may contain ``"title"`` and
+                ``"genres"`` (pipe-separated) keys.
+        """
         self.cfg = cfg
         self.item_db = item_db
         self.buffer = ViolationBuffer(cfg)
 
     # Feature extraction
     def _extract_features_movielens(self, mid: int) -> Tuple[str, Tuple[str, ...]]:
+        """Extract movie title and genres from the item database.
+
+        Args:
+            mid (int): Item id.
+
+        Returns:
+            Tuple[str, Tuple[str, ...]]: A pair ``(title, genres)`` where
+            ``genres`` is a tuple of non-empty genre strings.
+        """
         info = self.item_db.get(int(mid), {})
         title = info.get("title", f"UNKNOWN_ITEM_{mid}")
         genres_str = info.get("genres", "") or info.get("genre", "")
@@ -58,10 +124,20 @@ class PromptRepairEngine:
         pred_mid: Optional[int] = None,
         pred_title: Optional[str] = None,
     ) -> None:
-        """
-        Store ONE entry per violation (paper buffer V). Do NOT duplicate per attribute.
-        - If pred_mid is known and in item_db -> store title + genres
-        - Else store pred_title and empty genres
+        """Store one violation entry in the rolling buffer.
+
+        This method stores a single buffer entry per violation (i.e., it does
+        not duplicate entries per protected attribute).
+
+        If ``pred_mid`` is provided and exists in ``item_db``, the stored entry
+        includes title and genres extracted from the database; otherwise the
+        entry stores ``pred_title`` and an empty genre tuple.
+
+        Args:
+            attrs (Dict[str, str]): Protected attributes for the violated
+                example.
+            pred_mid (Optional[int]): Predicted item id if available.
+            pred_title (Optional[str]): Predicted title string if available.
         """
         attrs_norm = {k: str(v) for k, v in (attrs or {}).items()}
 
@@ -88,17 +164,25 @@ class PromptRepairEngine:
         )
 
     def mine_avoid_rules(self, current_attrs: Dict[str, str]) -> List[str]:
-        """
-        Returns a list of Avoid rules to inject for the CURRENT user.
+        """Mine Avoid rules for the current user's protected attributes.
 
-        keying="tuple":
-        - filter buffer entries where ALL protected_cols match current_attrs
+        The engine supports two keying modes:
 
-        keying="per_attr":
-        - for each col in protected_cols:
-            filter entries where attrs[col] == current_attrs[col]
-            mine frequent features and emit Avoid rules keyed by that single attr
-        - NOTE: buffer size still counts violations (not attrs), so no 3x growth.
+        - ``keying="tuple"``: filter violation entries where all
+          ``cfg.protected_cols`` match ``current_attrs``.
+        - ``keying="per_attr"``: for each protected column, filter entries that
+          match the value of that column and mine rules keyed by the single
+          attribute.
+
+        Args:
+            current_attrs (Dict[str, str]): Protected attributes of the user
+                being served.
+
+        Returns:
+            List[str]: A list of Avoid rules.
+
+        Raises:
+            ValueError: If ``cfg.keying`` is not one of the supported values.
         """
         current_attrs = {k: str(v) for k, v in (current_attrs or {}).items()}
         if not current_attrs:
@@ -159,6 +243,20 @@ class PromptRepairEngine:
         iteration: int,
         max_iterations: int,
         ) -> str:
+        """Build a system prompt with optional mined constraints.
+
+        Args:
+            attrs (Optional[Dict[str, str]]): Protected attributes of the
+                current user. When provided, the engine mines Avoid rules from
+                the buffer.
+            q_alpha (float): Threshold value inserted into the system prompt.
+            iteration (int): Current iteration number, included for logging.
+            max_iterations (int): Total planned iterations, included for
+                logging.
+
+        Returns:
+            str: System prompt string.
+        """
         base = [
             "You are a fair recommendation system.",
             "Rules:",
@@ -180,14 +278,28 @@ class PromptRepairEngine:
 
     # Helpers for per attribute rule
     def _tuple_label(self, attrs: Dict[str, str]) -> str:
+        """Create a key label by concatenating protected attribute assignments.
+
+        Args:
+            attrs (Dict[str, str]): Protected attributes.
+
+        Returns:
+            str: Label string of the form ``"col=value|col=value|..."``.
+        """
         return "|".join([f"{c}={attrs.get(c,'')}" for c in self.cfg.protected_cols])
 
     def _mine_rules_from_entries(self, entries: List[ViolationEntry], key_label: str) -> List[str]:
-        """
-        Mine frequent features from entries and emit Avoid rules.
-        Priority:
-          1) genres (MovieLens)
-          2) exact titles
+        """Mine feature-based Avoid rules from a filtered set of violations.
+
+        The implementation prioritizes rules derived from genres first, then
+        falls back to rules derived from exact titles.
+
+        Args:
+            entries (List[ViolationEntry]): Violations to mine from.
+            key_label (str): Key label inserted into emitted rules.
+
+        Returns:
+            List[str]: Avoid rules derived from frequent genres/titles.
         """
         if not entries:
             return []

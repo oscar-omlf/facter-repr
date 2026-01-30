@@ -1,3 +1,14 @@
+"""Compute counterfactual recommendation sensitivity metrics.
+
+This module implements a counterfactual evaluation routine that perturbs
+protected-attribute fields in MovieLens-style user context (e.g., gender, age,
+occupation), reruns a ranking or open-generation model, and measures the
+distance between the resulting recommendation lists in an embedding space.
+
+TODO(doc): Clarify how the returned metric relates to any counterfactual metric
+definition in the paper; this file documents only implemented behavior.
+"""
+
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
@@ -21,6 +32,31 @@ _ML_OCC_IDS = sorted(OCC_ID2LABEL.keys())       # [0..20]
 
 @dataclass(frozen=True)
 class CFRConfig:
+    """Configure counterfactual recommendation evaluation.
+
+    The configuration specifies which protected attributes to flip, how to flip
+    them, how many examples to sample from a dataset, and how many
+    recommendations to consider.
+
+    Note:
+        ``__post_init__`` normalizes ``flip_attr`` so it is always a sequence.
+
+    Attributes:
+        protected_cols (Tuple[str, ...]): Column names considered protected
+            attributes in the input DataFrame.
+        k (int): Number of items to consider for each recommendation list.
+        flip_attr (Optional[Sequence[str]]): Protected attributes to flip.
+            If a string is provided, it is converted to a single-element list.
+            If None, defaults to ``["gender"]``.
+        flip_strategy (str): Strategy name used by :func:`get_flipped_value`.
+            Supported values are ``"random"`` and ``"minimal"``.
+        n_samples (int): Number of rows to sample from the input DataFrame.
+        seed (int): Random seed used for DataFrame sampling.
+
+    Raises:
+        ValueError: If ``flip_strategy`` is not one of ``"random"`` or
+            ``"minimal"``.
+    """
     protected_cols: Tuple[str, ...] = ("gender", "age", "occupation")
     k: int = 10
     # which attribute(s) to flip for CFR. Can be a single str or list of str.
@@ -32,6 +68,7 @@ class CFRConfig:
     seed: int = 42
     
     def __post_init__(self):
+        """Normalize and validate configuration fields."""
         # Ensure flip_attr is always a sequence, convert str to list if needed
         if isinstance(self.flip_attr, str):
             object.__setattr__(self, 'flip_attr', [self.flip_attr])
@@ -44,12 +81,26 @@ class CFRConfig:
 
 
 def get_flipped_value(attr: str, value, strategy: str = "random") -> str:
-    """
-    Get a flipped value for a protected attribute (MovieLens).
-    
-    Strategy options:
-    - "random": uniformly random valid value (may be the same as original)
-    - "minimal": minimal in-domain flip (gender: opposite, age: adjacent, occupation: next)
+    """Return a flipped value for a MovieLens-style protected attribute.
+
+    The flip behavior depends on the ``strategy``:
+
+    - ``"random"``: sample a random valid value for the attribute (may be the
+      same as the input value).
+    - ``"minimal"``: apply a deterministic in-domain flip as implemented by
+      :func:`flip_protected_value`.
+
+    Args:
+        attr (str): Attribute name (e.g., ``"gender"``, ``"age"``,
+            ``"occupation"``).
+        value (Any): Current value for the attribute.
+        strategy (str): Flip strategy name.
+
+    Returns:
+        str: Flipped value.
+
+    Raises:
+        ValueError: If ``strategy`` is not recognized.
     """
     if strategy == "random":
         return get_random_protected_value(attr)
@@ -60,12 +111,16 @@ def get_flipped_value(attr: str, value, strategy: str = "random") -> str:
 
 
 def get_random_protected_value(attr: str):
-    """
-    Random valid value for MovieLens protected attribute.
-    Types are aligned with the rest of the pipeline:
-      - gender: str
-      - age: int
-      - occupation: int
+    """Sample a random valid value for a MovieLens-style protected attribute.
+
+    The return types follow the per-attribute branches in this function.
+
+    Args:
+        attr (str): Attribute name.
+
+    Returns:
+        Any: Randomly sampled value. For ``"gender"`` this is a string; for
+        ``"age"`` and ``"occupation"`` this is an ``int``.
     """
     if attr == "gender":
         return str(np.random.choice(["M", "F"]))
@@ -80,11 +135,21 @@ def get_random_protected_value(attr: str):
 
 
 def flip_protected_value(attr: str, value):
-    """
-    Minimal in-domain flips (MovieLens):
-    - gender: M <-> F
-    - age: adjacent valid age bucket
-    - occupation: (o + 1) mod 21
+    """Apply a deterministic in-domain flip for MovieLens-style attributes.
+
+    Minimal in-domain flips implemented by this function:
+    - ``gender``: swap ``"M"`` and ``"F"`` (case-insensitive).
+    - ``age``: move to an adjacent valid bucket in ``_ML_AGE_BUCKETS`` (after
+      snapping to the closest bucket if needed).
+    - ``occupation``: compute ``(o + 1) % (max(_ML_OCC_IDS) + 1)`` after
+      converting to int and snapping invalid values to 0.
+
+    Args:
+        attr (str): Attribute name.
+        value (Any): Current value.
+
+    Returns:
+        Any: Flipped value. Type depends on the attribute branch.
     """
     if attr == "gender":
         v = str(value)
@@ -128,7 +193,23 @@ def _embed_list_mean(
     item_db: Dict[int, Dict[str, str]],
     item_embedder: Optional["ItemEmbedder"] = None
 ) -> np.ndarray:
-    """Embed list of item mids and return normalized mean embedding."""
+    """Compute a normalized mean embedding for a list of item ids.
+
+    If an ``item_embedder`` is provided, this function uses precomputed item
+    embeddings via ``item_embedder.get_embeddings``. Otherwise it falls back to
+    embedding item text constructed by :func:`facter.fairness.scoring.item_text`.
+
+    Args:
+        embedder (TextEmbedder): Text embedder used when ``item_embedder`` is
+            not provided.
+        mids (Sequence[int]): Item ids to embed.
+        item_db (Dict[int, Dict[str, str]]): Item metadata used by
+            :func:`item_text` when embedding from text.
+        item_embedder (Optional[ItemEmbedder]): Optional item-embedding cache.
+
+    Returns:
+        np.ndarray: A 1D normalized mean embedding vector.
+    """
     if item_embedder is not None:
         # Use pre-computed item embeddings
         embs = item_embedder.get_embeddings(mids)  # [K,D], normalized
@@ -146,6 +227,15 @@ def _embed_list_mean(
 
 
 def _l2_distance(u: np.ndarray, v: np.ndarray) -> float:
+    """Compute the Euclidean distance between two vectors.
+
+    Args:
+        u (np.ndarray): First vector.
+        v (np.ndarray): Second vector.
+
+    Returns:
+        float: Euclidean (L2) distance.
+    """
     return float(np.linalg.norm(u - v))
 
 
@@ -165,6 +255,60 @@ def compute_cfr(
     progress: bool = False,
     item_embedder: Optional["ItemEmbedder"] = None,
 ) -> float:
+    """Compute a counterfactual recommendation distance score.
+
+    The function samples up to ``cfg.n_samples`` rows from ``df`` (without
+    replacement), constructs an "original" and a "counterfactual" prompt per
+    sampled row by flipping each attribute in ``cfg.flip_attr``, runs the model
+    in either rank or open-generation mode, and measures the L2 distance between
+    the mean embeddings of the two resulting recommendation lists.
+
+    - In ``predict_mode == 'rank'``, candidates are taken from
+      ``row['candidate_titles']``/``row['candidate_mids']`` and prompts from
+      ``row['prompt_rank']``.
+    - In ``predict_mode == 'open'``, prompts are taken from ``row['prompt_open']``
+      (or ``row['prompt_gen']``) if present, otherwise built with
+      :func:`build_open_prompt`.
+
+    Only rows where both the original and counterfactual recommendation lists
+    can be mapped to at least one item id contribute to the mean.
+
+    Args:
+        df (pd.DataFrame): Source examples.
+        embedder (TextEmbedder): Text embedder used to embed recommended items
+            (unless ``item_embedder`` is provided).
+        item_db (Dict[int, Dict[str, str]]): Item metadata mapping used for
+            embedding and (in open mode) for title-to-id fallback building.
+        prompt_cfg (PromptConfig): Prompt configuration used when building open
+            prompts.
+        cfg (CFRConfig): Counterfactual evaluation configuration.
+        predict_mode (str): Either ``'rank'`` or ``'open'``.
+        ranker (Optional[Ranker]): Required when ``predict_mode == 'rank'``.
+        generator (Optional[Generator]): Required when ``predict_mode == 'open'``.
+        catalogue_mapper (Optional[CatalogueMapper]): Optional embedding-based
+            mapper used in open-generation mode.
+        title_to_mid (Optional[Dict[str, int]]): Optional fallback mapping used
+            in open-generation mode.
+        min_sim (float): Minimum similarity threshold passed to the catalogue
+            mapper.
+        iter (Optional[int]): Optional iteration index used to select
+            ``system_prompt_iter{iter}`` from each row.
+        progress (bool): Whether to show progress in model batch calls.
+        item_embedder (Optional[ItemEmbedder]): Optional item-embedding cache.
+
+    Returns:
+        float: Mean L2 distance between original and counterfactual mean-list
+        embeddings. Returns 0.0 if no valid pairs contribute.
+
+    Raises:
+        ValueError: If any attribute in ``cfg.flip_attr`` is not contained in
+            ``cfg.protected_cols``.
+        ValueError: If ``predict_mode == 'rank'`` and ``ranker`` is not
+            provided.
+        ValueError: If ``predict_mode == 'open'`` and ``generator`` is not
+            provided.
+        ValueError: If ``predict_mode`` is not ``'rank'`` or ``'open'``.
+    """
     for attr in cfg.flip_attr:
         if attr not in cfg.protected_cols:
             raise ValueError(f"flip_attr must contain only attributes from {cfg.protected_cols}, got {attr}")

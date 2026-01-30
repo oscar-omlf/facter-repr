@@ -1,3 +1,13 @@
+"""Rank candidate items using a HuggingFace causal language model.
+
+This module provides a small "ranker" wrapper around HuggingFace Transformers
+to order a provided candidate set given a ranking prompt. Rankings can be
+cached on disk (JSON files) to avoid repeated inference for identical inputs.
+
+The parsing utilities in this module are designed to interpret LLM outputs that
+attempt to return a JSON array of ranked titles.
+"""
+
 import hashlib
 import json
 import re
@@ -14,10 +24,30 @@ from facter.models.hf_generator import parse_json_list
 
 
 def _sha256(s: str) -> str:
+    """Compute a SHA-256 hex digest for a string.
+
+    Args:
+        s (str): Input string.
+
+    Returns:
+        str: Hex-encoded SHA-256 digest.
+    """
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 
 def _normalize_title(s: str) -> str:
+    """Normalize a title string for matching against candidate titles.
+
+    The normalization is heuristic and intended to make matching more robust to
+    formatting differences (quotes, whitespace, casing) and optional trailing
+    year suffixes.
+
+    Args:
+        s (str): Input title.
+
+    Returns:
+        str: Normalized title.
+    """
     s = s.strip().lower()
     s = s.replace("'", "'")
     s = re.sub(r'["""]', "", s)
@@ -41,8 +71,17 @@ def _normalize_title(s: str) -> str:
 
 
 def _try_parse_as_indices(titles: List[str], n: int) -> List[int]:
-    """
-    If titles contain numeric candidate IDs (1..n), extract and map them to indices.
+    """Extract numeric candidate references from parsed titles.
+
+    This helper supports LLM outputs that rank by returning integer identifiers
+    (1..n) rather than reproducing full candidate titles.
+
+    Args:
+        titles (List[str]): Parsed entries from the model output.
+        n (int): Number of candidates.
+
+    Returns:
+        List[int]: De-duplicated 0-based candidate indices.
     """
     out: List[int] = []
     for title in titles:
@@ -58,11 +97,19 @@ def _try_parse_as_indices(titles: List[str], n: int) -> List[int]:
 
 
 def _parse_ranking_to_indices(titles: List[str], candidate_titles: Sequence[str]) -> List[int]:
-    """
-    Map parsed titles to candidate indices using catalogue-based matching.
-    - Tries numeric indices first if titles contain numbers (1..n).
-    - Falls back to normalized title matching with substring fallback.
-    - Ensures output is a full permutation of indices.
+    """Map parsed model outputs to a permutation of candidate indices.
+
+    The function first attempts to interpret entries as numeric indices (1..n).
+    If that fails, it performs a best-effort match by normalized title, with a
+    substring fallback.
+
+    Args:
+        titles (List[str]): Parsed entries from the model output.
+        candidate_titles (Sequence[str]): Candidate titles to be ranked.
+
+    Returns:
+        List[int]: A full permutation of ``range(len(candidate_titles))``,
+        beginning with any indices recovered from the model output.
     """
     n = len(candidate_titles)
     norm_to_idx = {}
@@ -107,6 +154,29 @@ def _parse_ranking_to_indices(titles: List[str], candidate_titles: Sequence[str]
 
 @dataclass(frozen=True)
 class HFChatRankerConfig:
+    """Configure :class:`HFChatRanker`.
+
+    Attributes:
+        model_id (str): HuggingFace model identifier used with
+            :func:`transformers.AutoTokenizer.from_pretrained` and
+            :func:`transformers.AutoModelForCausalLM.from_pretrained`.
+        cache_dir (Path): Root directory for on-disk rank cache.
+        max_new_tokens (int): Maximum number of new tokens generated for the
+            ranking response.
+        temperature (float): Sampling temperature; values $\le 0$ disable
+            sampling.
+        top_p (float): Nucleus sampling parameter (used only when sampling is
+            enabled).
+        repetition_penalty (float): Repetition penalty forwarded to
+            ``model.generate``.
+        batch_size (int): Number of ranking prompts processed per generation
+            batch.
+        torch_dtype (str): Torch dtype passed to ``from_pretrained``.
+        device_map (str): Device mapping passed to ``from_pretrained``.
+        trust_remote_code (bool): Whether to allow custom model code in
+            ``from_pretrained``.
+        seed (Optional[int]): Optional seed included in the cache key.
+    """
     model_id: str
     cache_dir: Path = Path("data/cache/ranker")
     max_new_tokens: int = 250
@@ -121,14 +191,23 @@ class HFChatRankerConfig:
 
 
 class HFChatRanker:
-    """
-    Black-box ranker via local HF causal LM.
+    """Rank candidates via a local HuggingFace causal language model.
 
-    Deterministic settings by default (do_sample=False when temperature==0).
-    Caches rankings on disk keyed by (system_prompt, user_prompt, candidates).
+    Deterministic settings are used when ``cfg.temperature == 0``.
+    Rankings are cached on disk keyed by the model id, generation parameters,
+    system prompt, user prompt, and candidates.
     """
 
     def __init__(self, cfg: HFChatRankerConfig):
+        """Initialize the ranker and create model-specific cache directory.
+
+        Args:
+            cfg (HFChatRankerConfig): Ranker configuration.
+
+        Raises:
+            ValueError: If ``cfg.torch_dtype`` is not one of the supported
+                string values.
+        """
         self.cfg = cfg
         self.cfg.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -168,6 +247,16 @@ class HFChatRanker:
     #     return _sha256(json.dumps(blob, ensure_ascii=False, sort_keys=True))
 
     def _cache_key(self, prompt_rank: str, candidate_titles: Sequence[str], system_prompt: Optional[str]) -> str:
+        """Compute the cache key for a ranking request.
+
+        Args:
+            prompt_rank (str): User prompt that instructs ranking.
+            candidate_titles (Sequence[str]): Candidate titles to rank.
+            system_prompt (Optional[str]): Optional system prompt.
+
+        Returns:
+            str: SHA-256 digest over a JSON-serialized request descriptor.
+        """
         rank_cfg = {
             "max_new_tokens": int(self.cfg.max_new_tokens),
             "temperature": float(self.cfg.temperature),
@@ -187,6 +276,14 @@ class HFChatRanker:
         return _sha256(json.dumps(blob, ensure_ascii=False, sort_keys=True))
 
     def _cache_path(self, key: str) -> Path:
+        """Map a cache key to the corresponding on-disk JSON path.
+
+        Args:
+            key (str): Cache key produced by :meth:`_cache_key`.
+
+        Returns:
+            Path: Path to the cache file.
+        """
         return self._model_cache_dir / f"{key}.json"
 
     @torch.inference_mode()
@@ -197,17 +294,27 @@ class HFChatRanker:
         system_prompts: Sequence[Optional[str]],
         progress: bool = False,
     ) -> List[Tuple[List[int], str]]:
-        """
-        Rank multiple sets of candidates in batch.
+        """Rank multiple candidate sets in batch.
+
+        For each input, the model is prompted to return a JSON list. The parsed
+        list is converted to a permutation of candidate indices via
+        :func:`_parse_ranking_to_indices`.
 
         Args:
-            prompts: Ranking prompts
-            candidate_titles_list: Candidate titles per prompt
-            system_prompts: System prompts per prompt
-            progress: Show progress bar
+            prompts (Sequence[str]): Ranking prompts.
+            candidate_titles_list (Sequence[Sequence[str]]): Candidate titles
+                per prompt.
+            system_prompts (Sequence[Optional[str]]): System prompts per prompt.
+            progress (bool): Whether to show a tqdm progress bar.
 
         Returns:
-            List of (ranked_indices, raw_text) tuples
+            List[Tuple[List[int], str]]: For each prompt, a tuple of
+            ``(ranked_indices, raw_text)`` where ``ranked_indices`` is a
+            permutation of candidate indices and ``raw_text`` is the decoded
+            model continuation.
+
+        Raises:
+            ValueError: If input sequences are not the same length.
         """
         if len(prompts) != len(system_prompts) or len(prompts) != len(candidate_titles_list):
             raise ValueError("prompts, system_prompts, and candidate_titles_list must have the same length")
@@ -315,16 +422,16 @@ class HFChatRanker:
     def rank(
         self, prompt_rank: str, candidate_titles: Sequence[str], system_prompt: Optional[str] = None
     ) -> Tuple[List[int], str]:
-        """
-        Rank a single set of candidates. Wrapper for convenience.
+        """Rank a single candidate set.
 
         Args:
-            prompt_rank: Ranking prompt
-            candidate_titles: Candidate titles to rank
-            system_prompt: Optional system prompt
+            prompt_rank (str): Ranking prompt.
+            candidate_titles (Sequence[str]): Candidate titles to rank.
+            system_prompt (Optional[str]): Optional system prompt passed with
+                the request.
 
         Returns:
-            (ranked_indices, raw_text)
+            Tuple[List[int], str]: A pair ``(ranked_indices, raw_text)``.
         """
         results = self.rank_batch([prompt_rank], [candidate_titles], [system_prompt], progress=False)
         return results[0]

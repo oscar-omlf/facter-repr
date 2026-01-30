@@ -1,9 +1,25 @@
+"""Build prompt strings for generation and ranking tasks.
+
+This module contains small prompt templates used to construct LLM inputs from an
+interaction row, optionally including demographic metadata.
+
+"""
+
 from dataclasses import dataclass
 from typing import Dict, List
 
 
 @dataclass(frozen=True)
 class PromptConfig:
+    """Configure prompt rendering.
+
+    Attributes:
+        k_recs (int): Number of recommendations/titles to request in prompts.
+        include_demographics (bool): Whether to include demographic metadata in
+            the prompt.
+        domain (str): Domain label used when describing candidates/items.
+    """
+
     k_recs: int = 10
     include_demographics: bool = True
     domain: str = "movie"  # "movie" | "product"
@@ -47,6 +63,15 @@ OCC_ID2LABEL = {
 
 
 def _render_demographics(row: Dict) -> str:
+    """Render a demographics block from a row dictionary.
+
+    Args:
+        row (Dict): Row-like mapping containing demographic keys such as
+            ``gender``, ``age``, and ``occupation``.
+
+    Returns:
+        str: A formatted multi-line demographics string.
+    """
     age_val_raw = row.get("age", "")
     try:
         age_val = int(age_val_raw)
@@ -67,8 +92,18 @@ def _render_demographics(row: Dict) -> str:
 
 
 def build_ranking_prompt(row: Dict, candidate_titles: List[str], cfg: PromptConfig) -> str:
-    """
-    Ranking-style prompt: ask the LLM to rank a candidate set (used for controlled evaluation).
+    """Build a ranking-style prompt over a fixed candidate set.
+
+    The prompt requests the model to rank the provided `candidate_titles` and
+    return a JSON array of exactly `cfg.k_recs` titles.
+
+    Args:
+        row (Dict): Row-like mapping that must contain ``history_titles``.
+        candidate_titles (List[str]): Candidate titles to rank.
+        cfg (PromptConfig): Prompt configuration.
+
+    Returns:
+        str: Prompt string.
     """
     demo = ""
     if cfg.include_demographics:
@@ -89,12 +124,19 @@ def build_ranking_prompt(row: Dict, candidate_titles: List[str], cfg: PromptConf
 
 
 def build_open_prompt(row: Dict, cfg: PromptConfig) -> str:
-    """
-    Open-generation prompt:
-    Ask the LLM to produce a ranked list of top-k movie titles.
+    """Build an open-ended generation prompt.
 
-    Output requirement is strict to make parsing reliable:
-    Return ONLY a JSON array of exactly k_recs strings.
+    Asks the model to produce a ranked list of top-k titles.
+
+    Output requirement is strict to make parsing reliable: return ONLY a JSON
+    array of exactly `cfg.k_recs` strings.
+
+    Args:
+        row (Dict): Row-like mapping that must contain ``history_titles``.
+        cfg (PromptConfig): Prompt configuration.
+
+    Returns:
+        str: Prompt string.
     """
     demo = ""
     if cfg.include_demographics:

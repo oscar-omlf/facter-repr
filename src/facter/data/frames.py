@@ -1,3 +1,13 @@
+"""Load raw dataset files into pandas DataFrames and construct item databases.
+
+This module provides thin wrappers around raw dataset files (e.g., MovieLens-1M
+and Amazon Movies&TV) to:
+
+- Load the raw files into pandas DataFrames with canonicalized column names.
+- Apply lightweight preprocessing consistent with the repository's expectations.
+- Build an item database mapping item IDs to text fields used downstream.
+"""
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict
@@ -7,16 +17,30 @@ import pandas as pd
 
 @dataclass(frozen=True)
 class MovieLensFrames:
+    """Load MovieLens-1M raw files as pandas DataFrames.
+
+    Attributes:
+        raw_dir (Path): Directory containing MovieLens-1M raw files.
+        ratings (pd.DataFrame): Ratings DataFrame created in `__post_init__`.
+        users (pd.DataFrame): Users DataFrame created in `__post_init__`.
+        movies (pd.DataFrame): Movies DataFrame created in `__post_init__`.
+    """
+
     raw_dir: Path
 
     def __post_init__(self):
-        """
-        Loads MovieLens-1M from raw_dir (data/raw/ml-1m).
-        Returns ratings/users/movies dataframes with canonical columns.
+        """Load MovieLens-1M from `raw_dir` and attach DataFrames.
 
-        ratings: uid, mid, rating, timestamp
-        users: uid, gender, age, occupation, zip
-        movies: mid, title, genres
+        The computed DataFrames are stored as attributes on this frozen dataclass
+        via `object.__setattr__`.
+
+        Canonical DataFrame columns:
+            ratings: uid, mid, rating, timestamp
+            users: uid, gender, age, occupation, zip
+            movies: mid, title, genres
+
+        Returns:
+            None
         """
         ratings_path = self.raw_dir / "ratings.dat"
         users_path = self.raw_dir / "users.dat"
@@ -50,8 +74,10 @@ class MovieLensFrames:
         object.__setattr__(self, "movies", movies)
 
     def build_item_db(self) -> Dict[int, Dict[str, str]]:
-        """
-        Returns {mid: {"title": ..., "genres": ...}}
+        """Build an item database from the movies table.
+
+        Returns:
+            Dict[int, Dict[str, str]]: Mapping ``mid -> {"title": ..., "genres": ...}``.
         """
         m = self.movies.copy()
         m["mid"] = m["mid"].astype(int)
@@ -60,17 +86,34 @@ class MovieLensFrames:
 
 @dataclass(frozen=True)
 class AmazonFrames:
+    """Load Amazon Movies&TV ratings and metadata as pandas DataFrames.
+
+    Attributes:
+        raw_dir (Path): Directory containing extracted Amazon raw JSON files.
+        ratings (pd.DataFrame): Ratings/reviews DataFrame created in `__post_init__`.
+        metadata (pd.DataFrame): Item metadata DataFrame created in `__post_init__`.
+    """
+
     raw_dir: Path
 
     def __post_init__(self):
-        """
-        Loads Amazon Movies&TV 5-core + metadata from raw_dir (data/raw/amazon).
-        Returns ratings/users/movies dataframes with canonical columns.
+        """Load Amazon Movies&TV 5-core data from `raw_dir` and attach DataFrames.
 
-        ratings: 'rating', 'verified', 'reviewTime', 'uid', 'mid', 'style',
-                'reviewerName', 'text', 'summary', 'timestamp', 'vote',
-                'image'
-        metadata: asin, title
+        The ratings JSON is loaded and renamed into canonical columns. The
+        metadata JSON is reduced to the item identifier and title.
+
+        Columns (as used by this repository):
+            ratings: rating, verified, reviewTime, uid, mid, style, reviewerName,
+                text, summary, timestamp, vote, image
+            metadata: mid, title
+
+        Notes:
+            This implementation maps the original item IDs (ASIN strings) to
+            contiguous integer IDs based on the order of unique IDs in the
+            metadata table.
+
+        Returns:
+            None
         """
         ratings_path = self.raw_dir / "Movies_and_TV_5.json"
         metadata_path = self.raw_dir / "meta_Movies_and_TV_5.json"
@@ -104,8 +147,10 @@ class AmazonFrames:
         object.__setattr__(self, "metadata", metadata)
 
     def build_item_db(self) -> Dict[int, Dict[str, str]]:
-        """
-        Returns {mid: {"title": ...}}
+        """Build an item database from the metadata table.
+
+        Returns:
+            Dict[int, Dict[str, str]]: Mapping ``mid -> {"title": ...}``.
         """
         m = self.metadata.copy()
         m["mid"] = m["mid"].astype(int)

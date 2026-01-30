@@ -1,3 +1,12 @@
+"""Provide baseline evaluation utilities for the recommendation pipeline.
+
+This module contains helper functions for running simple baselines (primarily
+"zero-shot" ranking or open-generation) and evaluating their recommendation
+metrics.
+
+Some functions are kept for backward compatibility with older entry points.
+"""
+
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 import math
@@ -17,6 +26,11 @@ from facter.fairness.scoring import NonconformityScorer
 
 @dataclass(frozen=True)
 class BaselineConfig:
+    """Store baseline configuration.
+
+    Attributes:
+        k (int): Number of recommendations/ranked items to consider.
+    """
     k: int = 10
 
 
@@ -39,13 +53,63 @@ def run_zero_shot(
     protected_cols: Optional[Sequence[str]] = None,
     buffer_size: int = 50,
 ) -> pd.DataFrame:
-    """
-    Unified zero-shot prediction: rank or open-generation based on predict_mode.
+    """Run a unified zero-shot baseline in rank or open-generation mode.
 
-    IMPORTANT (Algorithm-1-aligned C):
-      - Maintain a bounded FIFO violation buffer V (maxlen=buffer_size).
-      - For each new point, filter V to the same protected group => C = |C|.
-      - Use adj_thr = threshold + C/sqrt(n) (keeping your existing formula).
+    The function augments ``df`` in-place with prediction columns produced by
+    either:
+    - :func:`facter.eval.prediction.predict_batch_rank` (rank mode), or
+    - :func:`facter.eval.prediction.predict_batch_open` (open mode).
+
+    If a ``scorer`` is provided, the function also computes nonconformity and
+    optionally flags violations using an adjusted threshold based on a bounded
+    FIFO buffer over previous violations.
+
+    The implemented adjustment is:
+
+    $$\\text{adj\\_thr} = \\text{threshold} + \\frac{C}{\\sqrt{n}}$$
+
+    where $n$ is ``len(df)`` and $C$ is the count of buffered prior violations
+    whose protected-group key matches the current row.
+
+    Args:
+        df (pd.DataFrame): Input examples.
+        ranker (Optional[Ranker]): Ranker used when ``predict_mode == 'rank'``.
+        generator (Optional[Generator]): Generator used when
+            ``predict_mode == 'open'``.
+        scorer (Optional[NonconformityScorer]): If provided, computes
+            nonconformity scores for predictions.
+        context_encoder (Optional[ContextEncoder]): Context encoder used to
+            embed rows prior to neighbor-index fitting.
+        item_db (Optional[Dict[int, Dict[str, str]]]): Item metadata mapping.
+        neighbor_index (Optional[Any]): Neighbor-index object expected to
+            support ``fit(df, context_emb)``.
+        predict_mode (str): Either ``'rank'`` or ``'open'``.
+        k (int): Number of recommendations/ranked items to produce or consider.
+        system_prompt (str | None): Optional system prompt passed through to
+            the underlying model.
+        progress (bool): Whether to show progress in underlying batched calls.
+        catalogue_mapper (Optional[CatalogueMapper]): Optional mapper used in
+            open-generation mode.
+        title_to_mid (Optional[Dict[str, int]]): Optional fallback mapping used
+            in open-generation mode.
+        min_sim (float): Minimum similarity threshold passed through to
+            catalogue mapping.
+        threshold (float): Base threshold used for computing adjusted
+            thresholds when ``scorer`` is provided.
+        protected_cols (Optional[Sequence[str]]): Protected-attribute columns
+            used to define the group key for the FIFO violation buffer.
+        buffer_size (int): Maximum size of the FIFO violation buffer.
+
+    Returns:
+        pd.DataFrame: The input DataFrame with additional prediction and
+        optional scoring/violation columns.
+
+    Raises:
+        ValueError: If required components for the selected ``predict_mode``
+            are missing.
+        ValueError: If ``context_encoder`` or ``neighbor_index`` is not
+            provided.
+        ValueError: If ``predict_mode`` is not ``'rank'`` or ``'open'``.
     """
     if predict_mode == "rank":
         if ranker is None:
@@ -156,9 +220,21 @@ def run_zero_shot_ranking(
     system_prompt: str | None = None,
     progress: bool = False,
 ) -> pd.DataFrame:
-    """
-    Deprecated: use run_zero_shot(..., predict_mode='rank') instead.
-    Kept for backward compatibility.
+    """Run the deprecated rank-mode zero-shot baseline.
+
+    This is a thin wrapper around :func:`run_zero_shot` with
+    ``predict_mode='rank'``.
+
+    Args:
+        df (pd.DataFrame): Input examples.
+        ranker (Ranker): Ranker used for prediction.
+        k (int): Number of recommendations/ranked items to consider.
+        system_prompt (str | None): Optional system prompt passed through to
+            the ranker.
+        progress (bool): Whether to show progress in the underlying call.
+
+    Returns:
+        pd.DataFrame: The input DataFrame with rank-mode prediction columns.
     """
     return run_zero_shot(
         df,
@@ -181,9 +257,29 @@ def run_zero_shot_generation(
     progress: bool = False,
     min_sim: float = 0.65,
 ) -> pd.DataFrame:
-    """
-    Deprecated: use run_zero_shot(..., predict_mode='open') instead.
-    Kept for backward compatibility.
+    """Run the deprecated open-generation zero-shot baseline.
+
+    This is a thin wrapper around :func:`run_zero_shot` with
+    ``predict_mode='open'``.
+
+    Args:
+        df (pd.DataFrame): Input examples.
+        generator (Generator): Generator used for open-generation.
+        item_db (Dict[int, Dict[str, str]]): Item metadata mapping.
+        k (int): Number of generated titles to request.
+        system_prompt (str | None): Optional system prompt passed through to
+            the generator.
+        catalogue_mapper (Optional[CatalogueMapper]): Optional embedding-based
+            mapper used to map generated titles to catalogue items.
+        title_to_mid (Optional[Dict[str, int]]): Optional fallback mapping used
+            to map normalized titles to item ids.
+        progress (bool): Whether to show progress in the underlying call.
+        min_sim (float): Minimum similarity threshold passed through to
+            catalogue mapping.
+
+    Returns:
+        pd.DataFrame: The input DataFrame with open-generation prediction
+        columns.
     """
     return run_zero_shot(
         df,
@@ -202,9 +298,22 @@ def evaluate_zero_shot(
     df: pd.DataFrame,
     k: int = 10,
 ) -> Dict[str, float]:
-    """
-    Evaluate zero-shot predictions using recall and NDCG metrics.
-    Assumes df contains 'ranked_mids' column (populated by run_zero_shot).
+    """Evaluate zero-shot predictions using recall and NDCG.
+
+    The function expects the DataFrame to already contain a ``ranked_mids``
+    column (as produced by :func:`run_zero_shot`). Targets are taken from the
+    ``target_mid`` column.
+
+    Args:
+        df (pd.DataFrame): DataFrame containing predictions and targets.
+        k (int): Cutoff used for Recall@k and NDCG@k.
+
+    Returns:
+        Dict[str, float]: Dictionary of metric values computed by
+        :func:`facter.eval.metrics.mean_recall_ndcg`.
+
+    Raises:
+        ValueError: If ``ranked_mids`` is missing from ``df``.
     """
     if "ranked_mids" not in df:
         raise ValueError("DataFrame must contain 'ranked_mids' column; call run_zero_shot first")
@@ -215,7 +324,13 @@ def evaluate_zero_shot(
 
 
 def run_up5_placeholder(*args, **kwargs):
-    """
-    UP5 to be implemented.
+    """Raise a placeholder error for an unimplemented UP5 baseline.
+
+    Args:
+        *args: Unused positional arguments.
+        **kwargs: Unused keyword arguments.
+
+    Raises:
+        NotImplementedError: Always raised to indicate UP5 is not implemented.
     """
     raise NotImplementedError()

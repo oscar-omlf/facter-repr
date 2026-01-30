@@ -1,3 +1,11 @@
+"""Construct interaction datasets and candidate sets for evaluation protocols.
+
+This module builds per-user interaction rows containing histories, targets, and
+optionally multi-target relevance sets. It also provides utilities to
+deterministically sample/split interactions and to construct ranking candidate
+pools.
+"""
+
 # src/facter/data/protocol.py
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
@@ -8,6 +16,28 @@ import pandas as pd
 
 @dataclass(frozen=True)
 class ProtocolConfig:
+    """Configure interaction construction, splitting, and candidate sampling.
+
+    Attributes:
+        min_history (int): Minimum history length required before a target can be
+            formed for a user.
+        sample_interactions (int): Number of interactions to sample prior to
+            splitting.
+        test_size (float): Fraction of sampled interactions allocated to the test
+            split.
+        seed (int): Random seed used for deterministic sampling/shuffling.
+        n_candidates (int): Candidate set size for ranking-style evaluation.
+        stratify (bool): Whether to attempt stratified splitting by protected
+            attributes.
+        protected_cols (Tuple[str, ...]): Column names used when computing
+            stratification strata.
+        relevance_mode (str): Relevance definition mode.
+        relevance_window (int): Window size used when `relevance_mode` is
+            "future_window".
+        max_pos_in_candidates (Optional[int]): Optional cap on how many positive
+            items to include in the candidate pool.
+    """
+
     min_history: int = 10  # how many history items before predicting next
     sample_interactions: int = 2500
     test_size: float = 0.30
@@ -23,12 +53,37 @@ class ProtocolConfig:
 
 
 def _process_ml(df1: pd.DataFrame, df2: pd.DataFrame) -> pd.DataFrame:
+    """Merge and sort MovieLens-style frames into a single interaction table.
+
+    Args:
+        df1 (pd.DataFrame): Ratings-like DataFrame containing at least ``uid`` and
+            ``timestamp``.
+        df2 (pd.DataFrame): Users-like DataFrame keyed by ``uid``.
+
+    Returns:
+        pd.DataFrame: Merged and time-sorted DataFrame.
+    """
     df = df1.merge(df2, on="uid", how="inner")
     df = df.sort_values(["uid", "timestamp"]).reset_index(drop=True)
     return df
 
 
 def _process_amazon(df1: pd.DataFrame, df2: pd.DataFrame, seed: int) -> pd.DataFrame:
+    """Merge and preprocess Amazon-style frames and synthesize protected columns.
+
+    This function merges ratings with metadata on ``mid``, sorts by ``uid`` and
+    ``timestamp``, coerces timestamps to numeric, drops rows missing key fields,
+    and then creates synthetic protected attributes.
+
+    Args:
+        df1 (pd.DataFrame): Ratings-like DataFrame containing at least ``uid``,
+            ``mid``, and ``timestamp``.
+        df2 (pd.DataFrame): Metadata-like DataFrame keyed by ``mid``.
+        seed (int): Seed used for deterministic random attribute generation.
+
+    Returns:
+        pd.DataFrame: Preprocessed DataFrame with synthesized protected columns.
+    """
     df = pd.merge(df1, df2, on="mid", how="inner")
     df = df.sort_values(["uid", "timestamp"]).reset_index(drop=True)
 
@@ -45,9 +100,20 @@ def _process_amazon(df1: pd.DataFrame, df2: pd.DataFrame, seed: int) -> pd.DataF
 
 
 def _compute_relevant_mids(mids: List[int], t: int, cfg: ProtocolConfig) -> List[int]:
-    """
-    Returns multi-target relevance set for position t.
-    Always includes mids[t] if available.
+    """Compute the relevance set for a target position within a user's sequence.
+
+    Always includes ``mids[t]`` when ``t`` is a valid index.
+
+    Args:
+        mids (List[int]): Sequence of item IDs for a user.
+        t (int): Target index into `mids`.
+        cfg (ProtocolConfig): Protocol configuration.
+
+    Returns:
+        List[int]: List of relevant item IDs for the given position.
+
+    Raises:
+        ValueError: If `cfg.relevance_mode` is not recognized.
     """
     if t < 0 or t >= len(mids):
         return []
@@ -76,18 +142,28 @@ def build_interactions_ml(
     item_db: Dict[int, Dict[str, str]],
     cfg: ProtocolConfig,
 ) -> pd.DataFrame:
-    """
-    Build interaction rows (MovieLens):
-      uid, gender, age, occupation,
-      history_mids (list[int]), history_titles (list[str]),
-      target_mid (int), target_title (str),
-      relevant_mids (list[int]), relevant_titles (list[str])
+    """Build MovieLens interaction rows with history, target, and relevance sets.
 
-    For each user:
-      for each position t >= min_history:
-        history = previous min_history items
-        target = mids[t]
-        relevant = per cfg.relevance_mode (includes target)
+    Output columns include:
+        uid, gender, age, occupation,
+        history_mids (list[int]), history_titles (list[str]),
+        target_mid (int), target_title (str),
+        relevant_mids (list[int]), relevant_titles (list[str]).
+
+    For each user and each position ``t >= cfg.min_history``:
+        - history consists of the previous ``cfg.min_history`` items.
+        - target is the item at position `t`.
+        - relevant items are computed via `_compute_relevant_mids` and include the
+          target.
+
+    Args:
+        ratings (pd.DataFrame): Ratings DataFrame.
+        users (pd.DataFrame): Users DataFrame.
+        item_db (Dict[int, Dict[str, str]]): Mapping from item ID to item fields.
+        cfg (ProtocolConfig): Protocol configuration.
+
+    Returns:
+        pd.DataFrame: Interaction rows.
     """
     df = ratings.merge(users, on="uid", how="inner")
     df = df.sort_values(["uid", "timestamp"]).reset_index(drop=True)
@@ -171,16 +247,31 @@ def build_interactions(
     cfg: ProtocolConfig,
     dataset: str = "ml-1m",
 ) -> pd.DataFrame:
-    """
-    Build interaction rows (generic):
-      uid, gender, age, occupation,
-      history_mids (list[int]), history_titles (list[str]),
-      target_mid (int), target_title (str),
-      relevant_mids (list[int]), relevant_titles (list[str])
+    """Build interaction rows for a supported dataset.
 
-    dataset:
-      - "ml-1m": merges ratings/users (df1/df2)
-      - "amazon": merges ratings/metadata (df1/df2), synthesizes protected attrs
+    Output columns include:
+        uid, gender, age, occupation,
+        history_mids (list[int]), history_titles (list[str]),
+        target_mid (int), target_title (str),
+        relevant_mids (list[int]), relevant_titles (list[str]).
+
+    Dataset handling:
+        - ``"ml-1m"``: merges ratings/users via `_process_ml`.
+        - ``"amazon"``: merges ratings/metadata via `_process_amazon` and
+          synthesizes protected attributes.
+
+    Args:
+        df1 (pd.DataFrame): Dataset-specific ratings-like table.
+        df2 (pd.DataFrame): Dataset-specific users/metadata table.
+        item_db (Dict[int, Dict[str, str]]): Mapping from item ID to item fields.
+        cfg (ProtocolConfig): Protocol configuration.
+        dataset (str): Dataset identifier.
+
+    Returns:
+        pd.DataFrame: Interaction rows.
+
+    Raises:
+        ValueError: If `dataset` is not recognized.
     """
     if dataset == "ml-1m":
         df = _process_ml(df1=df1, df2=df2)
@@ -261,10 +352,24 @@ def sample_and_split(
     interactions: pd.DataFrame,
     cfg: ProtocolConfig,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Deterministically sample cfg.sample_interactions interactions, then split into calibration/test.
+    """Sample interactions and split into calibration and test sets.
 
-    Stratification is by joint protected attributes if cfg.stratify=True and feasible.
+    Sampling is performed deterministically using `cfg.seed`, selecting exactly
+    `cfg.sample_interactions` rows without replacement. The sampled set is then
+    split into calibration and test.
+
+    If `cfg.stratify` is True, the function attempts to stratify by the joint
+    protected attributes in `cfg.protected_cols` when feasible.
+
+    Args:
+        interactions (pd.DataFrame): Interaction rows.
+        cfg (ProtocolConfig): Protocol configuration.
+
+    Returns:
+        Tuple[pd.DataFrame, pd.DataFrame]: (calibration_df, test_df).
+
+    Raises:
+        ValueError: If there are fewer than `cfg.sample_interactions` rows.
     """
     rng = np.random.default_rng(cfg.seed)
 
@@ -320,19 +425,29 @@ def build_candidate_sets(
     item_pool: np.ndarray,
     cfg: ProtocolConfig,
 ) -> pd.DataFrame:
-    """
-    Adds:
-      candidate_mids: list[int] length cfg.n_candidates
+    """Add ranking candidate sets to interaction rows.
 
-    Strategy (rank-mode):
-      - positives: from relevant_mids if present, else [target_mid]
-      - clip positives to max_pos_in_candidates (or sensible default)
-      - negatives: sample uniformly from item_pool excluding history + positives
-      - final candidate list = positives + negatives, then shuffle
+    Adds a ``candidate_mids`` column containing a list of length
+    ``cfg.n_candidates``.
+
+    Strategy:
+        - positives: from ``relevant_mids`` if present, else ``[target_mid]``
+        - optionally clip positives via `cfg.max_pos_in_candidates` (or a default
+          derived from the relevance mode)
+        - negatives: sample from `item_pool` while excluding history and positives
+        - combine positives and negatives, then shuffle
 
     Notes:
-      - This is essential if you want multi-target Recall/NDCG to be meaningful in rank mode.
-      - If cfg.relevance_mode == "single", this reduces to the original "1 positive + negatives".
+        - If `cfg.relevance_mode == "single"`, this reduces to the common
+          "1 positive + negatives" construction.
+
+    Args:
+        df (pd.DataFrame): Interaction rows.
+        item_pool (np.ndarray): Pool of item IDs eligible as negatives.
+        cfg (ProtocolConfig): Protocol configuration.
+
+    Returns:
+        pd.DataFrame: Copy of `df` with a new `candidate_mids` column.
     """
     rng = np.random.default_rng(cfg.seed)
     pool = np.asarray(item_pool, dtype=np.int64)
@@ -394,7 +509,7 @@ def build_candidate_sets(
 
         allowed = pool[~np.isin(pool, np.array(list(banned), dtype=np.int64))]
         if len(allowed) == 0:
-            # pathological fallback: allow sampling from pool excluding history only
+            # fallback: allow sampling from pool excluding history only
             allowed = pool[~np.isin(pool, np.array(list(hist_set), dtype=np.int64))]
 
         if len(allowed) == 0:

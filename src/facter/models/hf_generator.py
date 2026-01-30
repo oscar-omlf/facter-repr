@@ -1,3 +1,13 @@
+"""Run open-ended HuggingFace text generation with optional caching.
+
+This module provides a small wrapper around HuggingFace Transformers
+(:class:`transformers.AutoModelForCausalLM` and
+:class:`transformers.AutoTokenizer`) for producing text generations in batches.
+It also includes utilities to parse/clean list-like outputs (typically JSON
+arrays) from the generated text and a simple on-disk cache keyed by the inputs
+and generation configuration.
+"""
+
 import hashlib
 import json
 import re
@@ -13,6 +23,14 @@ _TRAILING_YEAR_RE = re.compile(r"\s*(?:\(|\[)\s*(19\d{2}|20\d{2})\s*(?:\)|\])\s*
 
 
 def _sha256(s: str) -> str:
+    """Compute a SHA-256 hex digest for a string.
+
+    Args:
+        s (str): Input string.
+
+    Returns:
+        str: Hex-encoded SHA-256 digest.
+    """
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 
@@ -42,6 +60,31 @@ def _clean_generated_title(s: object) -> str:
 
 @dataclass(frozen=True)
 class HFGenConfig:
+    """Configure :class:`HFOpenGenerator`.
+
+    Attributes:
+        model_id (str): HuggingFace model identifier used with
+            :func:`transformers.AutoTokenizer.from_pretrained` and
+            :func:`transformers.AutoModelForCausalLM.from_pretrained`.
+        max_new_tokens (int): Maximum number of new tokens generated per
+            prompt.
+        temperature (float): Sampling temperature; values $\le 0$ disable
+            sampling in :meth:`HFOpenGenerator.generate_topk`.
+        top_p (float): Nucleus sampling parameter (used only when sampling is
+            enabled).
+        repetition_penalty (float): Repetition penalty forwarded to
+            ``model.generate``.
+        batch_size (int): Number of prompts processed per generation batch.
+        cache_dir (Path): Root directory for on-disk generation cache.
+        torch_dtype (str): Data type used for model weights (e.g., "float16").
+            dtype selection in :class:`HFOpenGenerator` depends on CUDA
+            availability.
+        device_map (str): Device mapping in :class:`HFOpenGenerator` depends on
+            CUDA availability.
+        trust_remote_code (bool): Whether to allow using remote code (e.g., for
+            model loading).
+        seed (Optional[int]): Optional seed included in the cache key.
+    """
     model_id: str
     max_new_tokens: int = 250
     temperature: float = 0.7
@@ -56,6 +99,19 @@ class HFGenConfig:
 
 
 def parse_json_list(text: str, k: int) -> List[str]:
+    """Parse up to ``k`` unique items from a generated list-like response.
+
+    The function first attempts to extract a JSON array substring from the
+    provided text. If JSON parsing fails, it falls back to a line-based parser
+    that strips common list formatting (bullets, numbering, punctuation).
+
+    Args:
+        text (str): Raw generated text that is expected to contain a list.
+        k (int): Maximum number of items to return.
+
+    Returns:
+        List[str]: Up to ``k`` cleaned, de-duplicated items.
+    """
     if not text:
         return []
 
@@ -141,7 +197,23 @@ def parse_json_list(text: str, k: int) -> List[str]:
 
 
 class HFOpenGenerator:
+    """Generate and cache list-like completions using a HF causal LM.
+
+    The cache is stored in ``cfg.cache_dir`` under a model-specific subfolder.
+    Cache entries are keyed by the input prompts, system prompts, ``k``, and a
+    subset of generation parameters.
+    """
+
     def __init__(self, cfg: HFGenConfig, tokenizer: AutoTokenizer = None, model: AutoModelForCausalLM = None):
+        """Initialize a generator with a tokenizer/model, creating cache dirs.
+
+        Args:
+            cfg (HFGenConfig): Generator configuration.
+            tokenizer (AutoTokenizer, optional): Tokenizer instance to use. If
+                not provided, one is loaded from ``cfg.model_id``.
+            model (AutoModelForCausalLM, optional): Model instance to use. If
+                not provided, one is loaded from ``cfg.model_id``.
+        """
         self.cfg = cfg
         self.cfg.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -169,6 +241,17 @@ class HFOpenGenerator:
     #     return _sha256(json.dumps(blob, ensure_ascii=False, sort_keys=True))
 
     def _cache_key(self, prompts: Sequence[str], system_prompts: Sequence[Optional[str]], k: int) -> str:
+        """Compute the cache key for a batch generation request.
+
+        Args:
+            prompts (Sequence[str]): User prompts to generate from.
+            system_prompts (Sequence[Optional[str]]): System prompts paired
+                1:1 with ``prompts``.
+            k (int): Requested number of parsed items per prompt.
+
+        Returns:
+            str: SHA-256 digest over a JSON-serialized request descriptor.
+        """
         gen_cfg = {
             "max_new_tokens": int(self.cfg.max_new_tokens),
             "temperature": float(self.cfg.temperature),
@@ -188,6 +271,14 @@ class HFOpenGenerator:
         return _sha256(json.dumps(blob, ensure_ascii=False, sort_keys=True))
 
     def _cache_path(self, key: str) -> Path:
+        """Map a cache key to the corresponding on-disk JSON path.
+
+        Args:
+            key (str): Cache key produced by :meth:`_cache_key`.
+
+        Returns:
+            Path: Path to the cache file.
+        """
         return self._model_cache_dir / f"{key}.json"
 
     @torch.inference_mode()
@@ -198,6 +289,30 @@ class HFOpenGenerator:
         k: int,
         progress: bool = False,
     ) -> List[List[str]]:
+        """Generate and parse up to ``k`` items per prompt.
+
+        This method renders each (system, user) pair into a single string
+        prompt. If the tokenizer supports ``apply_chat_template``, it is used;
+        otherwise a simple plain-text template is applied.
+
+        Results are cached to disk as JSON when enabled by the filesystem
+        (i.e., when the computed cache file exists on subsequent calls).
+
+        Args:
+            prompts (Sequence[str]): User prompts to generate from.
+            system_prompts (Sequence[Optional[str]]): System prompts paired
+                1:1 with ``prompts``.
+            k (int): Maximum number of parsed items per prompt.
+            progress (bool): Whether to display a tqdm progress bar over
+                batches.
+
+        Returns:
+            List[List[str]]: Parsed items for each prompt.
+
+        Raises:
+            ValueError: If ``prompts`` and ``system_prompts`` have different
+                lengths.
+        """
         if len(prompts) != len(system_prompts):
             raise ValueError("prompts and system_prompts must have the same length")
 

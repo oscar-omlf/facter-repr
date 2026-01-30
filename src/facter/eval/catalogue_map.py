@@ -1,14 +1,20 @@
-"""
-catalogue_map.py: Map open-ended LLM outputs (free-text titles) to the closest
-catalog item using an embedding model.
+"""Map open-ended LLM outputs (free-text titles) to catalogue items.
 
-The LLM can output plausible titles,
-and we map them to the nearest known item if similarity is high enough.
+This module provides a small utility to map arbitrary title strings (e.g., LLM
+outputs) to the nearest catalogue title using cosine similarity in an embedding
+space.
 
-Outputs:
-- mapped titles (catalog canonical titles)
-- mapped mids (optional if you have mid->title map)
-- Valid@K (fraction of mapped items that pass similarity threshold)
+The main entry point is :class:`CatalogueMapper`, which builds an embedding
+index over the catalogue and then maps one title
+(:meth:`CatalogueMapper.map_one`) or a list of titles
+(:meth:`CatalogueMapper.map_list`).
+
+The code assumes the embedder returns *normalized* vectors so that cosine
+similarity can be computed via a dot product.
+
+Paper context:
+    The repository uses embedding-based mapping to convert generated text back
+    into catalogue items for evaluation in open-generation settings.
 """
 from __future__ import annotations
 
@@ -24,19 +30,37 @@ logger = logging.getLogger(__name__)
 
 
 def _normalize_title(s: str) -> str:
+    """Normalize a title string for mapping.
+
+    The normalization performed is minimal:
+    1) strip surrounding whitespace,
+    2) collapse internal whitespace to single spaces.
+
+    Args:
+        s (str): Input title.
+
+    Returns:
+        str: Normalized title.
+    """
     s = (s or "").strip()
     s = re.sub(r"\s+", " ", s)
     return s
 
 
 def rewrite_prompt_attrs(prompt: str, new_attrs: Dict[str, str]) -> str:
-    """
-    Replace the 'User profile (audit only)' fields in the prompt with new attribute values.
-    Expects lines:
-      - gender: ...
-      - age: ...
-      - occupation: ...
-    Safe fallback: if not found, we simply prepend a new profile block.
+    """Rewrite a prompt's user-profile block with updated protected attributes.
+
+    The function searches for lines of the form ``- <key>: <value>`` and
+    replaces the value for each key in ``new_attrs``. If no such lines are
+    found, it prepends a new "User profile (audit only)" block.
+
+    Args:
+        prompt (str): Prompt text to modify.
+        new_attrs (Dict[str, str]): Mapping from attribute key to replacement
+            value.
+
+    Returns:
+        str: Updated prompt text.
     """
     if not prompt:
         return prompt
@@ -60,6 +84,19 @@ def rewrite_prompt_attrs(prompt: str, new_attrs: Dict[str, str]) -> str:
 
 @dataclass
 class MapResult:
+    """Store catalogue-mapping outputs for a top-k list.
+
+    Attributes:
+        mapped_titles (List[str]): Canonical catalogue titles per position.
+            Invalid or duplicate-disallowed positions are set to ``""``.
+        mapped_mids (List[Optional[str]]): Catalogue item ids per position.
+            Invalid or duplicate-disallowed positions are set to ``None``.
+        sims (List[float]): Similarity scores per position (one per input
+            position, even if invalid).
+        valid_at_k (float): Fraction of the first ``k`` positions that mapped
+            to a non-empty canonical title (and, when ``allow_duplicates`` is
+            false, are not duplicates).
+    """
     mapped_titles: List[str]
     mapped_mids: List[Optional[str]]
     sims: List[float]
@@ -67,9 +104,18 @@ class MapResult:
 
 
 class CatalogueMapper:
-    """
-    Build an embedding index over catalog titles and map arbitrary strings to nearest neighbor.
-    Uses the TextEmbedder class for consistent embedding behavior with caching.
+    """Map free-text titles to the nearest catalogue title in embedding space.
+
+    The mapper builds an embedding index over catalogue titles via
+    :meth:`build`, then provides:
+    - :meth:`map_one` for mapping a single predicted title, and
+    - :meth:`map_list` for mapping the first ``k`` positions of a predicted
+      title list and computing ``valid_at_k``.
+
+    Attributes:
+        embedder: Text embedder used to encode titles.
+        item_db (Dict[str, Dict]): Catalogue mapping keyed by item id.
+        title_key (str): Key in ``item_db`` used to read the catalogue title.
     """
 
     def __init__(
@@ -78,6 +124,14 @@ class CatalogueMapper:
         item_db: Dict[str, Dict],
         title_key: str = "title",
     ):
+        """Initialize the catalogue mapper.
+
+        Args:
+            embedder: Embedder used for encoding titles.
+            item_db (Dict[str, Dict]): Catalogue mapping keyed by item id.
+            title_key (str): Key used to extract a title from each catalogue
+                record.
+        """
         self.embedder = embedder
         self.item_db = item_db
         self.title_key = title_key
@@ -88,15 +142,27 @@ class CatalogueMapper:
 
     @property
     def catalog_titles(self) -> List[str]:
+        """Return the normalized catalogue titles used for mapping."""
         return self._catalog_titles
 
     @property
     def catalog_mids(self) -> List[str]:
+        """Return the catalogue item ids aligned with :attr:`catalog_titles`."""
         return self._catalog_mids
 
     def build(self, dedup: bool = True) -> None:
-        """
-        Build embeddings for all catalog titles using TextEmbedder.
+        """Build the embedding index over catalogue titles.
+
+        The function extracts titles from ``item_db`` using ``title_key``,
+        normalizes them with :func:`_normalize_title`, optionally de-duplicates
+        by title (keeping the first id), then encodes all titles via the
+        embedder.
+
+        Args:
+            dedup (bool): Whether to de-duplicate catalogue titles.
+
+        Returns:
+            None
         """
         mids = []
         titles = []
@@ -124,9 +190,25 @@ class CatalogueMapper:
         self._catalog_embeds = self.embedder.encode_texts(self._catalog_titles)
 
     def map_one(self, title: str, min_sim: float = 0.65) -> Tuple[Optional[str], Optional[str], float]:
-        """
-        Map a single free-text title to (mid, catalog_title, sim).
-        Returns (None, None, sim) if below threshold.
+        """Map a single free-text title to its nearest catalogue neighbor.
+
+        The method normalizes ``title``, embeds it with the configured embedder,
+        computes cosine similarity against the precomputed catalogue embeddings,
+        and returns the best match if its similarity is at least ``min_sim``.
+
+        Args:
+            title (str): Free-text title to map.
+            min_sim (float): Minimum similarity required for a mapping to be
+                considered valid.
+
+        Returns:
+            Tuple[Optional[str], Optional[str], float]: A tuple
+            ``(mid, canonical_title, sim)``. If no mapping meets ``min_sim``,
+            returns ``(None, None, sim)`` where ``sim`` is the best similarity
+            found.
+
+        Raises:
+            RuntimeError: If :meth:`build` has not been called.
         """
         if self._catalog_embeds is None:
             raise RuntimeError("CatalogueMapper.build() must be called before mapping.")
@@ -155,11 +237,27 @@ class CatalogueMapper:
         min_sim: float = 0.65,
         allow_duplicates: bool = False,
     ) -> MapResult:
-        """
-        Map a list of predicted titles to catalog.
-        - titles: predicted list (may be shorter than k)
-        - returns mapped_titles (length k, may include "" where invalid)
-        - valid_at_k: fraction of positions 1..k that are valid mapped items
+        """Map the first ``k`` predicted titles to catalogue items.
+
+        The method calls :meth:`map_one` independently for each position
+        ``0..k-1``. If a position is invalid (below ``min_sim``) or duplicates
+        a previously accepted canonical title (when ``allow_duplicates`` is
+        false), that position is recorded as empty.
+
+        Args:
+            titles (List[str]): Predicted titles. If shorter than ``k``, missing
+                positions are treated as empty strings.
+            k (int): Number of positions to map.
+            min_sim (float): Minimum similarity required for a mapping to be
+                considered valid.
+            allow_duplicates (bool): Whether to allow the same canonical title
+                to appear multiple times in the mapped list.
+
+        Returns:
+            MapResult: Mapping outputs including ``valid_at_k``.
+
+        Raises:
+            RuntimeError: If :meth:`build` has not been called.
         """
         mapped_titles: List[str] = []
         mapped_mids: List[Optional[str]] = []

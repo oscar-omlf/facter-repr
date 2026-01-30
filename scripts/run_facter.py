@@ -1,3 +1,13 @@
+"""Run the FACTER reproduction pipeline from the command line.
+
+This script orchestrates dataset loading, offline calibration, baseline evaluation,
+and an optional online monitoring phase. It also integrates MLflow logging and
+optionally records energy/emissions via CodeCarbon when executed as a script.
+
+The high-level pipeline structure aligns with the paper's offline calibration and
+online monitoring phases. (Paper: Sec. 3.2 / Sec. 3.3 / Alg. 1)
+"""
+
 import argparse
 import itertools
 import json
@@ -60,6 +70,18 @@ FAIR_PROMPT_TEMPLATE = "\n".join([
 
 
 def _read_split(processed_dir: Path, split: str) -> pd.DataFrame:
+    """Load a processed dataset split from disk.
+
+    Args:
+        processed_dir (Path): Root processed directory for the dataset.
+        split (str): Split name (e.g., "cal" or "test").
+
+    Returns:
+        pd.DataFrame: DataFrame loaded from the JSONL split file.
+
+    Raises:
+        FileNotFoundError: If the split file does not exist.
+    """
     path = processed_dir / split / "dataset.jsonl"
     if not path.exists():
         raise FileNotFoundError(f"Missing split file: {path}")
@@ -68,6 +90,23 @@ def _read_split(processed_dir: Path, split: str) -> pd.DataFrame:
 
 @contextmanager
 def stage(name: str, timings: dict, log_to_mlflow: bool = True):
+    """Time and log a named pipeline stage.
+
+    This context manager prints start/end markers, records wall-clock time into
+    the provided timings mapping, and optionally logs stage metrics and errors
+    to MLflow.
+
+    Args:
+        name (str): Stage name used for console output and metric keying.
+        timings (dict): Mutable mapping populated with stage durations in seconds.
+        log_to_mlflow (bool): Whether to log stage metrics and errors to MLflow.
+
+    Yields:
+        None: Control is yielded to the body of the context.
+
+    Raises:
+        Exception: Re-raises any exception thrown inside the stage body.
+    """
     t0 = time.perf_counter()
     print(f"\n[stage] START {name}", flush=True)
     if log_to_mlflow:
@@ -89,6 +128,12 @@ def stage(name: str, timings: dict, log_to_mlflow: bool = True):
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    Returns:
+        argparse.Namespace: Parsed arguments, with ``model_id`` resolved from
+        the model registry when not explicitly provided.
+    """
     p = argparse.ArgumentParser()
     p.add_argument(
         "--seeds",
@@ -191,12 +236,31 @@ def parse_args() -> argparse.Namespace:
 
 
 def resolve_device(arg_device: str) -> str:
+    """Resolve a runtime device string.
+
+    Args:
+        arg_device (str): Device selector ("auto", "cpu", or "cuda").
+
+    Returns:
+        str: Resolved device string.
+    """
     if arg_device == "auto":
         return "cuda" if torch.cuda.is_available() else "cpu"
     return arg_device
 
 
 def parse_datasets(raw: str) -> List[str]:
+    """Parse a comma-separated dataset list.
+
+    Args:
+        raw (str): Comma-separated dataset names.
+
+    Returns:
+        List[str]: Normalized dataset names.
+
+    Raises:
+        ValueError: If any dataset name is not recognized.
+    """
     datasets = [d.strip().lower() for d in raw.split(",") if d.strip()]
     if not datasets:
         return ["ml-1m"]
@@ -207,6 +271,17 @@ def parse_datasets(raw: str) -> List[str]:
 
 
 def parse_seeds(raw: str) -> List[int]:
+    """Parse a comma-separated seed list.
+
+    Args:
+        raw (str): Comma-separated integers.
+
+    Returns:
+        List[int]: Parsed seed values.
+
+    Raises:
+        ValueError: If no seeds are provided.
+    """
     seeds = [int(s) for s in raw.split(",") if s.strip()]
     if not seeds:
         raise ValueError("Provide at least one seed via --seeds (comma-separated).")
@@ -214,6 +289,18 @@ def parse_seeds(raw: str) -> List[int]:
 
 
 def parse_protected_sets(args: argparse.Namespace) -> Tuple[List[str], List[Tuple[str, ...]]]:
+    """Determine protected attribute sets to evaluate.
+
+    Args:
+        args (argparse.Namespace): Parsed CLI arguments.
+
+    Returns:
+        Tuple[List[str], List[Tuple[str, ...]]]: The base attribute list and a
+        list of protected attribute tuples to use as "protected sets".
+
+    Raises:
+        ValueError: If any protected attribute name is not recognized.
+    """
     if args.protected_attrs:
         base_attrs = [a.strip() for a in args.protected_attrs.split(",") if a.strip()]
     else:
@@ -235,10 +322,27 @@ def parse_protected_sets(args: argparse.Namespace) -> Tuple[List[str], List[Tupl
 
 
 def _norm_title(title: str) -> str:
+    """Normalize an item title for lookup.
+
+    Args:
+        title (str): Title string.
+
+    Returns:
+        str: Normalized title.
+    """
     return str(title).strip().lower()
 
 
 def build_processed_dir(template: str, dataset_name: str) -> Path:
+    """Build the processed data directory path for a dataset.
+
+    Args:
+        template (str): Path template, potentially containing "{dataset}".
+        dataset_name (str): Dataset identifier.
+
+    Returns:
+        Path: Resolved processed directory path.
+    """
     if template == "data/processed/{dataset}":
         if dataset_name == "ml-1m":
             return Path("data/processed/ml-1m")
@@ -248,6 +352,20 @@ def build_processed_dir(template: str, dataset_name: str) -> Path:
 
 
 def load_item_db(dataset_name: str) -> Tuple[Dict[int, Dict[str, str]], str, Dict[str, int]]:
+    """Load an item database for a dataset.
+
+    Args:
+        dataset_name (str): Dataset identifier.
+
+    Returns:
+        Tuple[Dict[int, Dict[str, str]], str, Dict[str, int]]: A tuple of
+        ``(item_db, domain, title_to_mid)`` where ``item_db`` maps item IDs to
+        metadata, ``domain`` is a short domain label, and ``title_to_mid`` maps
+        normalized titles to item IDs.
+
+    Raises:
+        ValueError: If the dataset identifier is not recognized.
+    """
     raw_dir = download_dataset(dataset=dataset_name, force=False)
     if dataset_name == "ml-1m":
         frames = MovieLensFrames(raw_dir)
@@ -268,6 +386,17 @@ def load_item_db(dataset_name: str) -> Tuple[Dict[int, Dict[str, str]], str, Dic
 
 
 def init_models(args: argparse.Namespace, device: str, dataset_name: str) -> Tuple[TextEmbedder, HFChatRanker, HFOpenGenerator | None]:
+    """Initialize the embedder and language-model components.
+
+    Args:
+        args (argparse.Namespace): Parsed arguments.
+        device (str): Device string used by the embedder.
+        dataset_name (str): Dataset name to scope embedder caching.
+
+    Returns:
+        Tuple[TextEmbedder, HFChatRanker, HFOpenGenerator | None]: The text
+        embedder, chat ranker, and optionally an open-ended generator.
+    """
     embedder = TextEmbedder(
         EmbedderConfig(
             model_name="JJTsao/fine-tuned_movie_retriever-all-mpnet-base-v2",
@@ -302,6 +431,15 @@ def init_models(args: argparse.Namespace, device: str, dataset_name: str) -> Tup
 
 
 def build_catalogue(embedder: TextEmbedder, item_db: Dict[int, Dict[str, str]]) -> CatalogueMapper:
+    """Build a catalogue mapper for item title resolution.
+
+    Args:
+        embedder (TextEmbedder): Embedder used by the catalogue mapper.
+        item_db (Dict[int, Dict[str, str]]): Item metadata mapping.
+
+    Returns:
+        CatalogueMapper: Built catalogue mapper instance.
+    """
     catalogue_mapper = CatalogueMapper(embedder=embedder, item_db=item_db, title_key="title")
     catalogue_mapper.build(dedup=True)
     return catalogue_mapper
@@ -321,6 +459,28 @@ def run_baseline(
     system_prompt: str,
     item_embedder: ItemEmbedder,
 ) -> pd.DataFrame:
+    """Run the zero-shot baseline recommendation pipeline.
+
+    This corresponds to the paper's "Zero-Shot" baseline setting without any
+    iterative prompt repair. (Paper: Sec. 4.1)
+
+    Args:
+        args (argparse.Namespace): Parsed arguments.
+        protected_cols (Sequence[str]): Protected attribute columns defining groups.
+        test_df (pd.DataFrame): Test split data.
+        ranker (HFChatRanker): Ranker used in "rank" predict mode.
+        generator (HFOpenGenerator | None): Generator used in "open" predict mode.
+        embedder (TextEmbedder): Text embedder.
+        catalogue_mapper (CatalogueMapper): Catalogue mapper for open generation.
+        item_db (Dict[int, Dict[str, str]]): Item metadata mapping.
+        title_to_mid (Dict[str, int]): Normalized title-to-item-id map.
+        cal_q_alpha0 (float): Calibrated threshold value.
+        system_prompt (str): System prompt to use for the baseline run.
+        item_embedder (ItemEmbedder): Item embedder used by the scorer.
+
+    Returns:
+        pd.DataFrame: Baseline output DataFrame produced by the zero-shot runner.
+    """
 
     baseline_scorer = NonconformityScorer(
         embedder=embedder,
@@ -355,6 +515,18 @@ def run_baseline(
 
 
 def _resolve_cfr_flips(args: argparse.Namespace, protected_cols: Sequence[str]) -> List[str]:
+    """Resolve which protected attributes to use for CFR flips.
+
+    Args:
+        args (argparse.Namespace): Parsed arguments.
+        protected_cols (Sequence[str]): Protected columns for the current protected set.
+
+    Returns:
+        List[str]: Attributes to flip when computing CFR.
+
+    Raises:
+        ValueError: If any flip attribute name is not recognized.
+    """
     if args.cfr_flip_attrs:
         flips = [a.strip() for a in args.cfr_flip_attrs.split(",") if a.strip()]
     else:
@@ -379,6 +551,28 @@ def _compute_cfr_metrics(
     generator: HFOpenGenerator | None,
     item_embedder: ItemEmbedder,
 ) -> Dict[str, float]:
+    """Compute CFR metrics for a DataFrame and a set of flip attributes.
+
+    CFR is used as a counterfactual fairness metric by flipping protected
+    attributes in the prompt or input representation. (Paper: Sec. 4.1 / Eq. 14)
+
+    Args:
+        df (pd.DataFrame): DataFrame containing model outputs needed for CFR.
+        embedder (TextEmbedder): Text embedder.
+        item_db (Dict[int, Dict[str, str]]): Item metadata mapping.
+        prompt_cfg (PromptConfig): Prompt configuration.
+        catalogue_mapper (CatalogueMapper): Catalogue mapper for open generation.
+        title_to_mid (Dict[str, int]): Normalized title-to-item-id map.
+        args (argparse.Namespace): Parsed arguments.
+        cfr_flips (Sequence[str]): Attribute names to flip.
+        iteration (int | None): Iteration index to pass through to CFR computation.
+        ranker (HFChatRanker | None): Ranker used in "rank" mode.
+        generator (HFOpenGenerator | None): Generator used in "open" mode.
+        item_embedder (ItemEmbedder): Item embedder used by the CFR computation.
+
+    Returns:
+        Dict[str, float]: CFR metrics keyed by metric name.
+    """
     metrics: Dict[str, float] = {}
     cfg_all = CFRConfig(flip_attr=cfr_flips, k=args.k, flip_strategy=args.cfr_flip_strategy, seed=args.seed)
     kwargs_all = {
@@ -436,6 +630,30 @@ def compute_baseline_metrics(
     generator: HFOpenGenerator | None,
     item_embedder: ItemEmbedder,
 ) -> Dict[str, float]:
+    """Compute evaluation metrics for a baseline run.
+
+    This computes accuracy (Recall/NDCG) and group-level fairness proxies
+    (SNSR/SNSV) plus counterfactual fairness (CFR). (Paper: Sec. 2.2 / Sec. 4.1)
+
+    Args:
+        args (argparse.Namespace): Parsed arguments.
+        protected_cols (Sequence[str]): Protected attribute columns defining groups.
+        baseline_df (pd.DataFrame): Output DataFrame from the baseline run.
+        embedder (TextEmbedder): Text embedder.
+        item_db (Dict[int, Dict[str, str]]): Item metadata mapping.
+        prompt_cfg (PromptConfig): Prompt configuration.
+        catalogue_mapper (CatalogueMapper): Catalogue mapper for open generation.
+        title_to_mid (Dict[str, int]): Normalized title-to-item-id map.
+        ranker (HFChatRanker): Ranker used in "rank" mode.
+        generator (HFOpenGenerator | None): Generator used in "open" mode.
+        item_embedder (ItemEmbedder): Item embedder.
+
+    Returns:
+        Dict[str, float]: Metrics computed for the baseline run.
+
+    Raises:
+        KeyError: If required columns for Recall/NDCG computation are missing.
+    """
     metrics = evaluate_zero_shot(baseline_df, k=args.k)
 
     # Decide which recommendation lists to score
@@ -538,6 +756,28 @@ def run_online_monitor(
     title_to_mid: Dict[str, int],
     catalogue_mapper: CatalogueMapper,
 ):
+    """Run the online monitoring phase.
+
+    This delegates to the FACTER online phase: it evaluates new queries against
+    a conformal threshold, triggers prompt repair on violations, and may adapt
+    the threshold over iterations. (Paper: Sec. 3.3 / Eq. 11 / Alg. 1)
+
+    Args:
+        monitor (FACTEROnlineMonitor): Online monitor instance.
+        args (argparse.Namespace): Parsed arguments.
+        protected_cols (Sequence[str]): Protected attribute columns defining groups.
+        item_db (Dict[int, Dict[str, str]]): Item metadata mapping.
+        cal_art (CalibrationArtifacts): Calibration artifacts.
+        cal_q_alpha0 (float): Initial threshold value.
+        test_df (pd.DataFrame): Test split data.
+        generator (HFOpenGenerator | None): Generator used in "open" mode.
+        prompt_cfg (PromptConfig): Prompt configuration.
+        title_to_mid (Dict[str, int]): Normalized title-to-item-id map.
+        catalogue_mapper (CatalogueMapper): Catalogue mapper for open generation.
+
+    Returns:
+=        Online monitor instance.
+    """
     return monitor.run(
         test_df=test_df,
         item_db=item_db,
@@ -568,6 +808,28 @@ def compute_facter_metrics(
     generator: HFOpenGenerator | None,
     item_embedder: ItemEmbedder,
 ) -> Dict[str, float]:
+    """Compute evaluation metrics for the FACTER online monitoring output.
+
+    The per-iteration metrics mirror the paper's iterative monitoring setup.
+    (Paper: Sec. 3.3 / Sec. 4)
+
+    Args:
+        args (argparse.Namespace): Parsed arguments.
+        protected_cols (Sequence[str]): Protected attribute columns defining groups.
+        embedder (TextEmbedder): Text embedder.
+        item_db (Dict[int, Dict[str, str]]): Item metadata mapping.
+        out_df (pd.DataFrame): Output DataFrame from the online monitor.
+        prompt_cfg (PromptConfig): Prompt configuration.
+        cfr_flips (Sequence[str]): Attribute names to flip when computing CFR.
+        catalogue_mapper (CatalogueMapper): Catalogue mapper for open generation.
+        title_to_mid (Dict[str, int]): Normalized title-to-item-id map.
+        ranker (HFChatRanker): Ranker used in "rank" mode.
+        generator (HFOpenGenerator | None): Generator used in "open" mode.
+        item_embedder (ItemEmbedder): Item embedder.
+
+    Returns:
+        Dict[str, float]: Metrics keyed by metric name.
+    """
     metrics: Dict[str, float] = {}
 
     targets_single = out_df["target_mid"].astype(int).tolist()
@@ -663,6 +925,14 @@ def compute_facter_metrics(
 
 
 def save_outputs(processed_dir: Path, args: argparse.Namespace, pset: str, out_df: pd.DataFrame):
+    """Persist an output DataFrame to parquet and log its path.
+
+    Args:
+        processed_dir (Path): Processed dataset directory.
+        args (argparse.Namespace): Parsed arguments.
+        pset (str): Protected set key used in naming.
+        out_df (pd.DataFrame): Output DataFrame to write.
+    """
     out_path = processed_dir / "runs" / f"run_{args.model_id.replace('/', '_')}_{pset}_{args.predict_mode}.parquet"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_df.to_parquet(out_path, index=False)
@@ -670,9 +940,19 @@ def save_outputs(processed_dir: Path, args: argparse.Namespace, pset: str, out_d
 
 
 def compute_qstar_counterfactuals(out_df: pd.DataFrame, q_star: float, max_iterations: int) -> Dict[str, float]:
-    """
-    Diagnostics using already-computed S_iter{t}.
-    Does NOT re-run the model or prompt repair; only re-evaluates the violation predicate.
+    """Compute fixed-threshold violation diagnostics from per-iteration scores.
+
+    This uses already-computed ``S_iter{t}`` columns and does not re-run any
+    model inference or prompt repair. It only recomputes violation counts under
+    a fixed threshold ``q_star``.
+
+    Args:
+        out_df (pd.DataFrame): Output DataFrame containing ``S_iter{t}`` columns.
+        q_star (float): Fixed threshold to apply.
+        max_iterations (int): Maximum iteration index to evaluate.
+
+    Returns:
+        Dict[str, float]: Diagnostics keyed by metric name.
     """
     metrics: Dict[str, float] = {}
 
@@ -705,6 +985,16 @@ def run_for_dataset(
     protected_sets: List[Tuple[str, ...]],
     total_t0: float,
 ):
+    """Run the end-to-end pipeline for a dataset.
+
+    Args:
+        dataset_name (str): Dataset identifier.
+        args (argparse.Namespace): Parsed arguments for this run (including seed).
+        device (str): Device string.
+        base_attrs (List[str]): Base protected attributes derived from arguments.
+        protected_sets (List[Tuple[str, ...]]): Protected attribute tuples to evaluate.
+        total_t0 (float): Start time used to compute total elapsed duration.
+    """
     timings: dict[str, float] = {}
 
     processed_dir = build_processed_dir(args.processed_dir_template, dataset_name)
@@ -1000,6 +1290,7 @@ def run_for_dataset(
 
 
 def main() -> None:
+    """Entry point for running the script via Python."""
     args = parse_args()
     device = resolve_device(args.device)
     datasets = parse_datasets(args.datasets)

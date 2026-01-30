@@ -1,6 +1,11 @@
-"""
-Reusable prediction utilities for rank and open-generation modes.
-Used by: calibration, baselines, and online monitoring.
+"""Provide prediction helpers for ranking and open-generation evaluation.
+
+This module contains small, reusable routines that run a model (ranker or text
+generator) and post-process its output into a common ``PredictionResult``
+structure.
+
+These helpers are used by offline calibration, baselines, and online
+monitoring.
 """
 
 from dataclasses import dataclass
@@ -19,7 +24,26 @@ from facter.data.prompts import PromptConfig, build_open_prompt
 
 @dataclass
 class PredictionResult:
-    """Holds prediction results for a single or batch of examples."""
+    """Hold model predictions and associated diagnostics.
+
+    The same structure is used for both ranking mode (candidate re-ranking) and
+    open-generation mode (generate titles, then map to catalogue item ids).
+
+    Attributes:
+        pred_mids (List[int]): Predicted item ids (one per example), where
+            ``-1`` indicates that no valid item id could be produced.
+        pred_texts (List[str]): Human-readable prediction text (one per
+            example). In rank mode this is derived from ``item_db``; in open
+            mode it may be a mapped title or a raw generated title.
+        ranked_mids_list (List[List[int]]): Per-example list of item ids. In
+            rank mode this is the full ranking over candidates; in open mode
+            this is the list of mapped item ids in generation order.
+        generated_titles_list (List[List[str]]): Per-example generated titles.
+            Empty lists are used for rank mode.
+        valid_at_k_list (List[float]): Per-example mapping success ratio used
+            in open-generation mode. Defaults to ``0.0`` in rank mode.
+        model_responses (List[str]): Raw model outputs serialized as strings.
+    """
     pred_mids: List[int]
     pred_texts: List[str]
     ranked_mids_list: List[List[int]]  # For rank mode: all ranked mids; for open mode: mapped mids
@@ -34,8 +58,22 @@ def predict_single_rank(
     item_db: Dict[int, Dict[str, str]],
     system_prompt: Optional[str] = None,
 ) -> PredictionResult:
-    """
-    Single prediction in rank mode (select top-1 from candidates).
+    """Predict one example in rank mode (re-rank provided candidates).
+
+    The function calls ``ranker.rank`` on the row's rank prompt and candidate
+    titles, then uses the top-ranked candidate as the prediction.
+
+    Args:
+        row (pd.Series): Input row expected to contain at least
+            ``prompt_rank``, ``candidate_titles``, and ``candidate_mids``.
+        ranker (Ranker): Ranker used to score and order candidates.
+        item_db (Dict[int, Dict[str, str]]): Item metadata mapping used to
+            format ``pred_text`` via ``item_text``.
+        system_prompt (Optional[str]): Optional system prompt/context passed to
+            the ranker.
+
+    Returns:
+        PredictionResult: Result object containing a single prediction.
     """
     candidates_titles: List[str] = row["candidate_titles"]
     candidate_mids: List[int] = row["candidate_mids"]
@@ -70,8 +108,39 @@ def predict_single_open(
     title_to_mid: Optional[Dict[str, int]] = None,
     min_sim: float = 0.65,
 ) -> PredictionResult:
-    """
-    Single prediction in open-generation mode (generate titles then map to mids).
+    """Predict one example in open-generation mode (generate titles, then map).
+
+    The function generates ``prompt_cfg.k_recs`` titles with
+    ``generator.generate_topk`` and attempts to map generated titles to item ids
+    using either a ``CatalogueMapper`` (preferred) or a fallback
+    ``title_to_mid`` dictionary.
+
+    Args:
+        row (pd.Series): Input row. If it contains ``prompt_open`` (or
+            ``prompt_gen``), that string is used directly; otherwise an open
+            prompt is built from ``row.to_dict()`` and ``prompt_cfg``.
+        generator (Generator): Text generator used to produce recommendation
+            titles.
+        item_db (Dict[int, Dict[str, str]]): Item metadata mapping used by
+            ``item_text`` when a mapped ``mid`` is available.
+        prompt_cfg (PromptConfig): Prompt configuration, including ``k_recs``.
+        system_prompt (Optional[str]): Optional system prompt/context passed to
+            the generator.
+        catalogue_mapper (Optional[CatalogueMapper]): Mapper used to map
+            generated titles to catalogue items via embedding similarity.
+        title_to_mid (Optional[Dict[str, int]]): Fallback mapping from
+            normalized title strings to item ids.
+        min_sim (float): Similarity threshold passed through to
+            ``CatalogueMapper.map_list`` when provided.
+
+    Returns:
+        PredictionResult: Result object containing a single prediction.
+
+    Notes:
+        If neither ``catalogue_mapper`` nor ``title_to_mid`` is provided, the
+        returned ``pred_mid`` will be ``-1`` and ``pred_text`` will be taken
+        directly from the generated titles (or ``"UNKNOWN_GENERATION"`` if no
+        titles are produced).
     """
     open_prompt = row.get("prompt_open", row.get("prompt_gen", None))
     if open_prompt is None:
@@ -133,8 +202,25 @@ def predict_batch_rank(
     system_prompt: Optional[str] = None,
     progress: bool = False,
 ) -> PredictionResult:
-    """
-    Batch prediction in rank mode. If the ranker supports rank_batch, use it; otherwise fallback to per-row.
+    """Predict a batch in rank mode.
+
+    If the ``ranker`` exposes a ``rank_batch`` attribute, that path is used;
+    otherwise the function falls back to iterating rows and calling
+    ``ranker.rank``.
+
+    Args:
+        df (pd.DataFrame): Batch input expected to contain ``prompt_rank``,
+            ``candidate_titles``, and ``candidate_mids``.
+        ranker (Ranker): Ranker used to score and order candidates.
+        item_db (Dict[int, Dict[str, str]]): Item metadata mapping used to
+            format ``pred_text`` via ``item_text``.
+        system_prompt (Optional[str]): Optional system prompt/context passed to
+            the ranker.
+        progress (bool): Whether to show a tqdm progress bar in the per-row
+            fallback path.
+
+    Returns:
+        PredictionResult: Result object containing one prediction per row.
     """
     n = len(df)
 
@@ -194,8 +280,34 @@ def predict_batch_open(
     min_sim: float = 0.65,
     progress: bool = False,
 ) -> PredictionResult:
-    """
-    Batch prediction in open-generation mode with a single generator call.
+    """Predict a batch in open-generation mode.
+
+    The function builds one open prompt per row, performs a single batched
+    ``generator.generate_topk`` call, and then maps each generated list of
+    titles to item ids.
+
+    If neither ``catalogue_mapper`` nor ``title_to_mid`` is provided, a fallback
+    ``title_to_mid`` mapping is built from ``item_db``.
+
+    Args:
+        df (pd.DataFrame): Batch input.
+        generator (Generator): Text generator used to produce recommendation
+            titles.
+        item_db (Dict[int, Dict[str, str]]): Item metadata mapping.
+        prompt_cfg (PromptConfig): Prompt configuration, including ``k_recs``.
+        system_prompt (Optional[str]): Optional system prompt/context passed to
+            the generator.
+        catalogue_mapper (Optional[CatalogueMapper]): Mapper used to map
+            generated titles to catalogue items.
+        title_to_mid (Optional[Dict[str, int]]): Fallback mapping from
+            normalized title strings to item ids.
+        min_sim (float): Similarity threshold passed through to
+            ``CatalogueMapper.map_list`` when provided.
+        progress (bool): Whether to display a progress bar during batched
+            generation.
+
+    Returns:
+        PredictionResult: Result object containing one prediction per row.
     """
     n = len(df)
 
@@ -271,9 +383,16 @@ def predict_batch_open(
 
 
 def build_title_to_mid_dict(item_db: Dict[int, Dict[str, str]]) -> Dict[str, int]:
-    """
-    Build a normalized title->mid mapping from item database.
-    Used as fallback when catalog mapper is unavailable.
+    """Build a normalized title-to-id lookup from an item database.
+
+    The mapping uses ``str(title).strip().lower()`` as the normalization.
+
+    Args:
+        item_db (Dict[int, Dict[str, str]]): Item metadata mapping that may
+            contain a ``"title"`` field per item.
+
+    Returns:
+        Dict[str, int]: Mapping from normalized titles to item ids.
     """
     title_to_mid: Dict[str, int] = {}
     for mid, info in item_db.items():
