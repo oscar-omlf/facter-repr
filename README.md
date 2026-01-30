@@ -293,6 +293,7 @@ docker compose down
 
 ## Contributors
 - Oscar Miró López-Feliu ([@oscar-omlf](https://github.com/oscar-omlf))
+- Daimy van Loo ([@daimyvanloo](https://github.com/daimyvanloo))
 
 
 ## License
