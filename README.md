@@ -276,7 +276,7 @@ docker compose down
 
 
 ## Contributions
-- Oscar Miró López-Feliu (@oscar-omlf)
+- Oscar Miró López-Feliu ([@oscar-omlf](https://github.com/oscar-omlf))
 
 
 ## License
