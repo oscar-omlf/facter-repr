@@ -5,7 +5,7 @@ This repository is an **independent reimplementation** and **reproducibility stu
 **FACTER: Fairness-Aware Conformal Thresholding and Prompt Engineering for Enabling Fair LLM-Based Recommender Systems**  
 Arya Fayyazi, Mehdi Kamal, Massoud Pedram (ICML 2025)  
 [Paper](https://openreview.net/pdf?id=edN2rEemj6) (OpenReview)  
-[Code](https://github.com/AryaFayyazi/FACTER) (Github)
+[Code](https://github.com/AryaFayyazi/FACTER) (GitHub)
 
 FACTER is a post-hoc wrapper around a black-box LLM recommender that:
 
@@ -46,6 +46,22 @@ Exact metric parity with the reproduction paper may depend on model choice, comp
 └─ mlflow.db                   # Default MLflow store (SQLite)
 ```
 
+## MLflow runs archive (Git LFS)
+
+`mlruns.zip` is stored using **Git LFS**. If you clone this repo without Git LFS, you will get a small pointer file instead of the real zip.
+
+After cloning, run:
+
+```bash
+git lfs install
+git lfs pull
+```
+
+To verify you downloaded the real artifact:
+```
+ls -lh mlruns.zip
+```
+The file size should be approximately 150 MB
 
 ## Setup (conda)
 
@@ -130,7 +146,7 @@ GPU is recommended. CPU runs are supported but can be very slow.
 You can choose a model in two ways:
 
 1) **Recommended:** pick a short name via `--base_model`. (Available options: `llama3`, `llama2`, `mistral`)
-  This resolves to a HuggingFace `model_id` via the registry in `src/facter/models/model_registry.py` (`BASE_MODELS`).
+  This resolves to a Hugging Face `model_id` via the registry in `src/facter/models/model_registry.py` (`BASE_MODELS`).
 
 2) **Override:** pass a Hugging Face `--model_id` directly.
   If provided, it overrides `--base_model`.
@@ -275,8 +291,9 @@ docker compose down
 ```
 
 
-## Contributions
-...
+## Contributors
+- Oscar Miró López-Feliu ([@oscar-omlf](https://github.com/oscar-omlf))
+
 
 ## License
 This repository is for academic, non-commercial use only. For other uses, please contact the authors.
