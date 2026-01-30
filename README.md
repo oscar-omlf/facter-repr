@@ -24,7 +24,7 @@ Exact metric parity with the reproduction paper may depend on model choice, comp
 
 ## Repository structure
 
-*High-level map*::
+*High-level map*:
 
 ```text
 .
@@ -292,6 +292,7 @@ docker compose down
 
 ## Contributors
 - Oscar Miró López-Feliu ([@oscar-omlf](https://github.com/oscar-omlf))
+- Daimy van Loo ([@daimyvanloo](https://github.com/daimyvanloo))
 
 
 ## License
